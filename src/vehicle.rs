@@ -1,3 +1,4 @@
+use crate::intersection::stop_line_pos;
 use crate::route::{Cardinal, Route};
 
 #[derive(Clone)]
@@ -27,6 +28,9 @@ pub struct Vehicle {
     pub turn_end_angle: f64,
     pub turn_radius: f64,
     pub close_call: bool,
+    pub stop_line_x: f64,
+    pub stop_line_y: f64,
+    pub sprite_index: usize,
     pub color_index: usize,
 }
 
@@ -40,16 +44,31 @@ pub const FAST_SPEED: f64 = 240.0;
 pub const SAFE_DISTANCE: f64 = 60.0;
 
 impl Vehicle {
-    pub fn new(id: u64, origin: Cardinal, route: Route, lane_x: f64, lane_y: f64, color_index: usize) -> Self {
+    pub fn new(
+        id: u64,
+        origin: Cardinal,
+        route: Route,
+        lane_x: f64,
+        lane_y: f64,
+        sprite_index: usize,
+        color_index: usize,
+    ) -> Self {
         let speeds = [SLOW_SPEED, NORMAL_SPEED, FAST_SPEED];
         let base = speeds[id as usize % 3];
 
-        let (x, y, angle) = match origin {
-            Cardinal::South => (lane_x, lane_y, 0.0),
-            Cardinal::North => (lane_x, lane_y, 180.0),
-            Cardinal::West => (lane_x, lane_y, 90.0),
-            Cardinal::East => (lane_x, lane_y, 270.0),
+        // Angle convention: 0° = facing up (north), clockwise positive (SDL2).
+        // South-origin vehicles travel north (up)  → 0°
+        // North-origin vehicles travel south (down)→ 180°
+        // West-origin  vehicles travel east (right)→ 90°
+        // East-origin  vehicles travel west (left) → 270°
+        let angle = match origin {
+            Cardinal::South => 0.0,
+            Cardinal::North => 180.0,
+            Cardinal::West  => 90.0,
+            Cardinal::East  => 270.0,
         };
+        let (x, y) = (lane_x, lane_y);
+        let (slx, sly) = stop_line_pos(origin, route);
 
         Vehicle {
             id,
@@ -77,6 +96,9 @@ impl Vehicle {
             turn_end_angle: 0.0,
             turn_radius: 0.0,
             close_call: false,
+            stop_line_x: slx,
+            stop_line_y: sly,
+            sprite_index,
             color_index,
         }
     }

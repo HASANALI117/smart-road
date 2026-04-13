@@ -6,9 +6,10 @@ mod statistics;
 mod vehicle;
 
 use sdl2::event::Event;
-use sdl2::image::InitFlag;
 use sdl2::keyboard::Keycode;
 use std::time::Instant;
+
+use rand::Rng;
 
 use algorithm::SmartIntersection;
 use intersection::*;
@@ -33,15 +34,9 @@ fn main() {
 
     let mut canvas = window
         .into_canvas()
-        .accelerated()
-        .present_vsync()
+        .software()
         .build()
         .expect("Failed to create canvas");
-
-    // Initialize SDL2_image for PNG loading.
-    // The _image_context must stay alive for the duration of the program.
-    let _image_context = sdl2::image::init(InitFlag::PNG)
-        .expect("Failed to initialize SDL2_image");
 
     let texture_creator = canvas.texture_creator();
     let textures = renderer::GameTextures::load(&texture_creator);
@@ -100,6 +95,7 @@ fn main() {
                         &mut next_id,
                         &mut last_spawn,
                         elapsed,
+                        textures.car_textures.len(),
                     );
                 }
 
@@ -113,6 +109,7 @@ fn main() {
                         &mut next_id,
                         &mut last_spawn,
                         elapsed,
+                        textures.car_textures.len(),
                     );
                 }
 
@@ -126,6 +123,7 @@ fn main() {
                         &mut next_id,
                         &mut last_spawn,
                         elapsed,
+                        textures.car_textures.len(),
                     );
                 }
 
@@ -139,6 +137,7 @@ fn main() {
                         &mut next_id,
                         &mut last_spawn,
                         elapsed,
+                        textures.car_textures.len(),
                     );
                 }
 
@@ -156,7 +155,14 @@ fn main() {
                 if random_timer >= RANDOM_SPAWN_INTERVAL {
                     random_timer = 0.0;
                     let origin = Cardinal::random();
-                    try_spawn_vehicle(origin, &mut vehicles, &mut next_id, &mut last_spawn, elapsed);
+                    try_spawn_vehicle(
+                        origin,
+                        &mut vehicles,
+                        &mut next_id,
+                        &mut last_spawn,
+                        elapsed,
+                        textures.car_textures.len(),
+                    );
                 }
             }
 
@@ -197,6 +203,7 @@ fn try_spawn_vehicle(
     next_id: &mut u64,
     last_spawn: &mut [f64; 4],
     elapsed: f64,
+    car_count: usize,
 ) {
     let idx = match origin {
         Cardinal::North => 0,
@@ -222,7 +229,12 @@ fn try_spawn_vehicle(
     }
 
     let color_index = *next_id as usize % 6;
-    let v = Vehicle::new(*next_id, origin, route, sx, sy, color_index);
+    let sprite_index = if car_count == 0 {
+        0
+    } else {
+        rand::thread_rng().gen_range(0..car_count)
+    };
+    let v = Vehicle::new(*next_id, origin, route, sx, sy, sprite_index, color_index);
     vehicles.push(v);
     *next_id += 1;
     last_spawn[idx] = elapsed;

@@ -1,5 +1,5 @@
-use sdl2::image::LoadTexture;
 use sdl2::pixels::Color;
+use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::{Point, Rect};
 use sdl2::render::{Texture, TextureCreator, WindowCanvas};
 use sdl2::video::WindowContext;
@@ -7,17 +7,19 @@ use sdl2::video::WindowContext;
 use crate::intersection::*;
 use crate::statistics::Statistics;
 use crate::vehicle::Vehicle;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const GRASS_COLOR: Color = Color::RGB(76, 153, 0);
 const MARKING_COLOR: Color = Color::RGB(255, 255, 255);
 const LINE_COLOR: Color = Color::RGB(200, 200, 200);
 
-// Car sprite default orientation: facing UP (north).
+// Car sprite default orientation: facing LEFT (west).
 // vehicle.angle 0 = up, 90 = right, 180 = down, 270 = left.
-// SDL2 copy_ex rotates clockwise — matches vehicle.angle directly.
+// SDL2 copy_ex rotates clockwise, so we add 90° when drawing sprites.
 
 pub struct GameTextures<'a> {
-    pub car: Option<Texture<'a>>,
+    pub car_textures: Vec<Texture<'a>>,
     pub road_left: Option<Texture<'a>>,
     pub road_mid: Option<Texture<'a>>,
     pub road_right: Option<Texture<'a>>,
@@ -25,17 +27,101 @@ pub struct GameTextures<'a> {
 
 impl<'a> GameTextures<'a> {
     pub fn load(creator: &'a TextureCreator<WindowContext>) -> Self {
-        let load = |path: &str| match creator.load_texture(path) {
-            Ok(t) => { println!("Loaded {}", path); Some(t) }
-            Err(e) => { eprintln!("Warning: could not load {}: {}", path, e); None }
-        };
+        let mut car_paths = Vec::new();
+        collect_car_textures(Path::new("assets/cars"), &mut car_paths);
+        car_paths.sort();
+
+        let mut car_textures = Vec::new();
+        for path in car_paths {
+            match load_texture_from_png(creator, &path) {
+                Ok(texture) => car_textures.push(texture),
+                Err(error) => eprintln!("Warning: could not load {}: {}", path.display(), error),
+            }
+        }
+
         GameTextures {
-            car:        load("assets/car_black.png"),
-            road_left:  load("assets/left.png"),
-            road_mid:   load("assets/mid.png"),
-            road_right: load("assets/right.png"),
+            car_textures,
+            road_left: None,
+            road_mid: None,
+            road_right: None,
         }
     }
+}
+
+fn collect_car_textures(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_car_textures(&path, paths);
+            continue;
+        }
+
+        let is_top_png = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.ends_with("-top.png"))
+            .unwrap_or(false);
+
+        if is_top_png {
+            paths.push(path);
+        }
+    }
+}
+
+fn load_texture_from_png<'a>(
+    creator: &'a TextureCreator<WindowContext>,
+    path: &Path,
+) -> Result<Texture<'a>, String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    // Decode by file signature instead of extension so mislabeled assets still load.
+    let image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+    let rgba = image.to_rgba8();
+    let (rgba, width, height) = crop_to_alpha_bounds(rgba);
+
+    let mut texture = creator
+        .create_texture_streaming(PixelFormatEnum::RGBA32, width, height)
+        .map_err(|error| error.to_string())?;
+
+    texture
+        .update(None, rgba.as_raw(), (4 * width) as usize)
+        .map_err(|error| error.to_string())?;
+
+    Ok(texture)
+}
+
+fn crop_to_alpha_bounds(src: image::RgbaImage) -> (image::RgbaImage, u32, u32) {
+    let (width, height) = src.dimensions();
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut found = false;
+
+    for y in 0..height {
+        for x in 0..width {
+            if src.get_pixel(x, y).0[3] > 8 {
+                found = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if !found {
+        return (src, width, height);
+    }
+
+    let crop_w = max_x - min_x + 1;
+    let crop_h = max_y - min_y + 1;
+    let cropped = image::imageops::crop_imm(&src, min_x, min_y, crop_w, crop_h).to_image();
+    (cropped, crop_w, crop_h)
 }
 
 // ─────────────────────────────────────────────────────────
@@ -259,25 +345,34 @@ fn draw_lane_arrows(canvas: &mut WindowCanvas) {
 // ─────────────────────────────────────────────────────────
 
 fn draw_vehicle(canvas: &mut WindowCanvas, v: &Vehicle, textures: &GameTextures) {
-    match &textures.car {
-        Some(car_tex) => draw_vehicle_textured(canvas, v, car_tex),
-        None          => draw_vehicle_fallback(canvas, v),
+    if !textures.car_textures.is_empty() {
+        let index = v.sprite_index % textures.car_textures.len();
+        draw_vehicle_textured(canvas, v, &textures.car_textures[index]);
+    } else {
+        draw_vehicle_fallback(canvas, v)
     }
 }
 
 fn draw_vehicle_textured(canvas: &mut WindowCanvas, v: &Vehicle, tex: &Texture) {
-    let w = v.width as u32;
-    let h = v.height as u32;
+    const TEXTURED_CAR_LENGTH_SCALE: f64 = 1.0;
+    const TEXTURED_CAR_WIDTH_SCALE: f64 = 4.5;
+    let info = tex.query();
+    // Source sprites face left, so after 90° rotation texture width maps to on-screen length.
+    let target_length = v.height * TEXTURED_CAR_LENGTH_SCALE;
+    let scale = target_length / info.width as f64;
+    let w = (info.height as f64 * scale * TEXTURED_CAR_WIDTH_SCALE).max(1.0) as u32;
+    let h = (info.width as f64 * scale).max(1.0) as u32;
     let dst = Rect::new(
-        (v.x - v.width  / 2.0) as i32,
-        (v.y - v.height / 2.0) as i32,
+        (v.x - (w as f64) / 2.0) as i32,
+        (v.y - (h as f64) / 2.0) as i32,
         w, h,
     );
+    let render_angle = (v.angle + 90.0) % 360.0;
     canvas.copy_ex(
         tex,
         None,
         Some(dst),
-        v.angle,
+        render_angle,
         Some(Point::new(w as i32 / 2, h as i32 / 2)),
         false, false,
     ).ok();
