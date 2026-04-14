@@ -233,15 +233,8 @@ fn move_vehicle(vehicle: &mut Vehicle, dt: f64) {
     // Determine if vehicle should begin turning
     if in_intersection && !vehicle.turning && !vehicle.passed_intersection {
         match vehicle.route {
-            Route::Straight => {
-                // Continue straight
-            }
-            Route::Right => {
-                setup_right_turn(vehicle);
-            }
-            Route::Left => {
-                setup_left_turn(vehicle);
-            }
+            Route::Straight => {}
+            Route::Right | Route::Left => setup_turn(vehicle),
         }
     }
 
@@ -279,85 +272,50 @@ fn move_vehicle(vehicle: &mut Vehicle, dt: f64) {
     }
 }
 
-fn setup_right_turn(vehicle: &mut Vehicle) {
+fn setup_turn(vehicle: &mut Vehicle) {
     vehicle.turning = true;
     vehicle.turn_progress = 0.0;
 
-    let r = LANE_WIDTH * 0.8;
-    vehicle.turn_radius = r;
+    let (start_x, start_y) = turn_entry_point(vehicle.origin, vehicle.route);
+    vehicle.turn_start_x = start_x;
+    vehicle.turn_start_y = start_y;
+    vehicle.x = start_x;
+    vehicle.y = start_y;
 
-    match vehicle.origin {
-        Cardinal::South => {
-            vehicle.turn_center_x = vehicle.x - r;
-            vehicle.turn_center_y = vehicle.y;
-            vehicle.turn_start_angle = 0.0_f64.to_radians();
-            vehicle.turn_end_angle = -90.0_f64.to_radians();
-        }
-        Cardinal::North => {
-            vehicle.turn_center_x = vehicle.x + r;
-            vehicle.turn_center_y = vehicle.y;
-            vehicle.turn_start_angle = 180.0_f64.to_radians();
-            vehicle.turn_end_angle = 90.0_f64.to_radians();
-        }
-        Cardinal::West => {
-            vehicle.turn_center_x = vehicle.x;
-            vehicle.turn_center_y = vehicle.y - r;
-            vehicle.turn_start_angle = 90.0_f64.to_radians();
-            vehicle.turn_end_angle = 0.0_f64.to_radians();
-        }
-        Cardinal::East => {
-            vehicle.turn_center_x = vehicle.x;
-            vehicle.turn_center_y = vehicle.y + r;
-            vehicle.turn_start_angle = 270.0_f64.to_radians();
-            vehicle.turn_end_angle = 180.0_f64.to_radians();
-        }
-    }
-}
-
-fn setup_left_turn(vehicle: &mut Vehicle) {
-    vehicle.turning = true;
-    vehicle.turn_progress = 0.0;
-
-    let r = LANE_WIDTH * 2.0;
-    vehicle.turn_radius = r;
-
-    match vehicle.origin {
-        Cardinal::South => {
-            vehicle.turn_center_x = vehicle.x + r;
-            vehicle.turn_center_y = vehicle.y;
-            vehicle.turn_start_angle = 180.0_f64.to_radians();
-            vehicle.turn_end_angle = 270.0_f64.to_radians();
-        }
-        Cardinal::North => {
-            vehicle.turn_center_x = vehicle.x - r;
-            vehicle.turn_center_y = vehicle.y;
-            vehicle.turn_start_angle = 0.0_f64.to_radians();
-            vehicle.turn_end_angle = 90.0_f64.to_radians();
-        }
-        Cardinal::West => {
-            vehicle.turn_center_x = vehicle.x;
-            vehicle.turn_center_y = vehicle.y + r;
-            vehicle.turn_start_angle = 270.0_f64.to_radians();
-            vehicle.turn_end_angle = 360.0_f64.to_radians();
-        }
-        Cardinal::East => {
-            vehicle.turn_center_x = vehicle.x;
-            vehicle.turn_center_y = vehicle.y - r;
-            vehicle.turn_start_angle = 90.0_f64.to_radians();
-            vehicle.turn_end_angle = 0.0_f64.to_radians();
-        }
-    }
+    let (end_x, end_y) = turn_exit_point(vehicle.origin, vehicle.route);
+    vehicle.turn_end_x = end_x;
+    vehicle.turn_end_y = end_y;
+    vehicle.turn_radius = LANE_WIDTH * 1.1;
 }
 
 fn update_turn(vehicle: &mut Vehicle, dt: f64) {
     let speed = vehicle.velocity * dt;
-    let arc_length = vehicle.turn_radius * (vehicle.turn_end_angle - vehicle.turn_start_angle).abs();
-    if arc_length <= 0.0 {
+    let entry_dir = travel_direction(vehicle.origin);
+    let exit_dir = exit_direction(vehicle.origin, vehicle.route);
+    let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
+    let (exit_dx, exit_dy) = cardinal_vector(exit_dir);
+
+    let start = (vehicle.turn_start_x, vehicle.turn_start_y);
+    let end = (vehicle.turn_end_x, vehicle.turn_end_y);
+    let control_len = vehicle.turn_radius.max(LANE_WIDTH * 0.75);
+
+    let control_1 = (
+        start.0 + entry_dx * control_len,
+        start.1 + entry_dy * control_len,
+    );
+    let control_2 = (
+        end.0 - exit_dx * control_len,
+        end.1 - exit_dy * control_len,
+    );
+
+    let path_length = distance(start.0, start.1, end.0, end.1).max(control_len * 2.0);
+    if path_length <= 0.0 {
         vehicle.turning = false;
         vehicle.passed_intersection = true;
         return;
     }
-    let progress_increment = speed / arc_length;
+
+    let progress_increment = speed / path_length;
     vehicle.turn_progress += progress_increment;
 
     if vehicle.turn_progress >= 1.0 {
@@ -365,33 +323,81 @@ fn update_turn(vehicle: &mut Vehicle, dt: f64) {
         vehicle.turning = false;
         vehicle.passed_intersection = true;
 
-        // Set final direction angle
-        let exit_dir = exit_direction(vehicle.origin, vehicle.route);
-        vehicle.angle = match exit_dir {
-            Cardinal::North => 0.0,
-            Cardinal::South => 180.0,
-            Cardinal::East => 270.0,
-            Cardinal::West => 90.0,
-        };
-
-        // Position at turn end
-        let t = vehicle.turn_progress;
-        let current_angle = vehicle.turn_start_angle + t * (vehicle.turn_end_angle - vehicle.turn_start_angle);
-        vehicle.x = vehicle.turn_center_x + vehicle.turn_radius * current_angle.cos();
-        vehicle.y = vehicle.turn_center_y - vehicle.turn_radius * current_angle.sin();
+        vehicle.x = end.0;
+        vehicle.y = end.1;
+        vehicle.angle = heading_from_vector(exit_dx, exit_dy);
         return;
     }
 
     let t = vehicle.turn_progress;
-    let current_angle = vehicle.turn_start_angle + t * (vehicle.turn_end_angle - vehicle.turn_start_angle);
-    vehicle.x = vehicle.turn_center_x + vehicle.turn_radius * current_angle.cos();
-    vehicle.y = vehicle.turn_center_y - vehicle.turn_radius * current_angle.sin();
+    let (x, y) = cubic_bezier_point(start, control_1, control_2, end, t);
+    let (dx, dy) = cubic_bezier_derivative(start, control_1, control_2, end, t);
+    vehicle.x = x;
+    vehicle.y = y;
+    vehicle.angle = heading_from_vector(dx, dy);
+}
 
-    // Update visual rotation angle
-    let tangent_angle = if vehicle.turn_end_angle > vehicle.turn_start_angle {
-        current_angle + std::f64::consts::FRAC_PI_2
-    } else {
-        current_angle - std::f64::consts::FRAC_PI_2
-    };
-    vehicle.angle = -tangent_angle.to_degrees() + 90.0;
+fn cardinal_vector(direction: Cardinal) -> (f64, f64) {
+    match direction {
+        Cardinal::North => (0.0, -1.0),
+        Cardinal::South => (0.0, 1.0),
+        Cardinal::East => (1.0, 0.0),
+        Cardinal::West => (-1.0, 0.0),
+    }
+}
+
+fn heading_from_vector(dx: f64, dy: f64) -> f64 {
+    if dx.abs() < f64::EPSILON && dy.abs() < f64::EPSILON {
+        return 0.0;
+    }
+
+    dx.atan2(-dy).to_degrees().rem_euclid(360.0)
+}
+
+fn cubic_bezier_point(
+    start: (f64, f64),
+    control_1: (f64, f64),
+    control_2: (f64, f64),
+    end: (f64, f64),
+    t: f64,
+) -> (f64, f64) {
+    let one_minus_t = 1.0 - t;
+    let one_minus_t_sq = one_minus_t * one_minus_t;
+    let t_sq = t * t;
+
+    let x = one_minus_t_sq * one_minus_t * start.0
+        + 3.0 * one_minus_t_sq * t * control_1.0
+        + 3.0 * one_minus_t * t_sq * control_2.0
+        + t_sq * t * end.0;
+    let y = one_minus_t_sq * one_minus_t * start.1
+        + 3.0 * one_minus_t_sq * t * control_1.1
+        + 3.0 * one_minus_t * t_sq * control_2.1
+        + t_sq * t * end.1;
+
+    (x, y)
+}
+
+fn cubic_bezier_derivative(
+    start: (f64, f64),
+    control_1: (f64, f64),
+    control_2: (f64, f64),
+    end: (f64, f64),
+    t: f64,
+) -> (f64, f64) {
+    let one_minus_t = 1.0 - t;
+
+    let x = 3.0 * one_minus_t * one_minus_t * (control_1.0 - start.0)
+        + 6.0 * one_minus_t * t * (control_2.0 - control_1.0)
+        + 3.0 * t * t * (end.0 - control_2.0);
+    let y = 3.0 * one_minus_t * one_minus_t * (control_1.1 - start.1)
+        + 6.0 * one_minus_t * t * (control_2.1 - control_1.1)
+        + 3.0 * t * t * (end.1 - control_2.1);
+
+    (x, y)
+}
+
+fn distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    (dx * dx + dy * dy).sqrt()
 }

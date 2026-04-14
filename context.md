@@ -26,6 +26,14 @@ This file is a running record of major repository changes so future agents can r
 - Fix: some `*-top.png` files are actually WebP binaries; loader now decodes by file signature (`image::load_from_memory`) instead of trusting file extension.
 - Fix: textured car rendering now preserves each sprite's aspect ratio and scales by length, preventing squeezed cars.
 
+### 2026-04-14 - Turn routing fix
+- Reworked the intersection turn path in `src/algorithm.rs` to use a directional cubic curve between the lane entry point and the correct exit lane instead of the old mirrored arc tables.
+- Updated `src/intersection.rs` turn helpers so exit positions are derived from the actual exit road lane, preserving the existing lane convention used by the road markings.
+- Removed the obsolete arc-only turning fields from `src/vehicle.rs` and stored explicit turn start/end points for curve interpolation.
+- Corrected right/left semantics in `src/intersection.rs`: `exit_direction(...)` now matches each vehicle's travel heading, and north/south lane-center mapping now places right-turn traffic on the actual right-side lane.
+- Added regression tests in `src/intersection.rs` for lane-center ordering, right/left exit mapping, and turn-exit lane alignment.
+- Verification: `cargo check` passes; the only remaining warning is the pre-existing unused `stop_line_x` / `stop_line_y` fields in `src/vehicle.rs`.
+
 ## Entry Template
 
 ### YYYY-MM-DD
