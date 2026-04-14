@@ -5,6 +5,7 @@ use sdl2::render::{Texture, TextureCreator, WindowCanvas};
 use sdl2::video::WindowContext;
 
 use crate::intersection::*;
+use crate::route::{Cardinal, Route};
 use crate::statistics::Statistics;
 use crate::vehicle::Vehicle;
 use std::fs;
@@ -312,32 +313,50 @@ fn draw_solid_line_h(canvas: &mut WindowCanvas, y: i32, x_start: i32, x_end: i32
 
 fn draw_lane_arrows(canvas: &mut WindowCanvas) {
     canvas.set_draw_color(MARKING_COLOR);
-    let lane_w = LANE_WIDTH;
     let it = INTERSECTION_TOP;
     let ib = INTERSECTION_BOTTOM;
     let il = INTERSECTION_LEFT;
     let ir = INTERSECTION_RIGHT;
 
+    // South approach (moving north): right-turn lane points east,
+    // straight lane points north, left-turn lane points west.
     let arrow_y = (ib + 60.0) as i32;
-    for i in 0..3 {
-        let ax = (CENTER_X + lane_w / 2.0 + lane_w * i as f64) as i32;
-        draw_arrow_up(canvas, ax, arrow_y);
-    }
+    let (sx_r, _) = lane_center(Cardinal::South, Route::Right);
+    let (sx_s, _) = lane_center(Cardinal::South, Route::Straight);
+    let (sx_l, _) = lane_center(Cardinal::South, Route::Left);
+    draw_arrow_right(canvas, sx_r as i32, arrow_y);
+    draw_arrow_up(canvas, sx_s as i32, arrow_y);
+    draw_arrow_left(canvas, sx_l as i32, arrow_y);
+
+    // North approach (moving south): right-turn lane points west,
+    // straight lane points south, left-turn lane points east.
     let arrow_y = (it - 60.0) as i32;
-    for i in 0..3 {
-        let ax = (CENTER_X - lane_w / 2.0 - lane_w * i as f64) as i32;
-        draw_arrow_down(canvas, ax, arrow_y);
-    }
+    let (nx_r, _) = lane_center(Cardinal::North, Route::Right);
+    let (nx_s, _) = lane_center(Cardinal::North, Route::Straight);
+    let (nx_l, _) = lane_center(Cardinal::North, Route::Left);
+    draw_arrow_left(canvas, nx_r as i32, arrow_y);
+    draw_arrow_down(canvas, nx_s as i32, arrow_y);
+    draw_arrow_right(canvas, nx_l as i32, arrow_y);
+
+    // West approach (moving east): right-turn lane points south,
+    // straight lane points east, left-turn lane points north.
     let arrow_x = (il - 60.0) as i32;
-    for i in 0..3 {
-        let ay = (CENTER_Y - lane_w / 2.0 - lane_w * i as f64) as i32;
-        draw_arrow_right(canvas, arrow_x, ay);
-    }
+    let (_, wy_r) = lane_center(Cardinal::West, Route::Right);
+    let (_, wy_s) = lane_center(Cardinal::West, Route::Straight);
+    let (_, wy_l) = lane_center(Cardinal::West, Route::Left);
+    draw_arrow_down(canvas, arrow_x, wy_r as i32);
+    draw_arrow_right(canvas, arrow_x, wy_s as i32);
+    draw_arrow_up(canvas, arrow_x, wy_l as i32);
+
+    // East approach (moving west): right-turn lane points north,
+    // straight lane points west, left-turn lane points south.
     let arrow_x = (ir + 60.0) as i32;
-    for i in 0..3 {
-        let ay = (CENTER_Y + lane_w / 2.0 + lane_w * i as f64) as i32;
-        draw_arrow_left(canvas, arrow_x, ay);
-    }
+    let (_, ey_r) = lane_center(Cardinal::East, Route::Right);
+    let (_, ey_s) = lane_center(Cardinal::East, Route::Straight);
+    let (_, ey_l) = lane_center(Cardinal::East, Route::Left);
+    draw_arrow_up(canvas, arrow_x, ey_r as i32);
+    draw_arrow_left(canvas, arrow_x, ey_s as i32);
+    draw_arrow_down(canvas, arrow_x, ey_l as i32);
 }
 
 // ─────────────────────────────────────────────────────────

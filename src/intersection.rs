@@ -32,15 +32,15 @@ const SPAWN_MARGIN: f64 = 60.0;
 //    Straight → x = CENTER_X - LANE_WIDTH * 1.5
 //    Left     → x = CENTER_X - LANE_WIDTH * 0.5
 //
-//  West approach (vehicles move →, occupy north half of horizontal road):
-//    Right    → y = CENTER_Y - LANE_WIDTH * 0.5
-//    Straight → y = CENTER_Y - LANE_WIDTH * 1.5
-//    Left     → y = CENTER_Y - LANE_WIDTH * 2.5
-//
-//  East approach (vehicles move ←, occupy south half of horizontal road):
-//    Right    → y = CENTER_Y + LANE_WIDTH * 0.5
+//  West approach (vehicles move →, occupy south half of horizontal road):
+//    Right    → y = CENTER_Y + LANE_WIDTH * 2.5
 //    Straight → y = CENTER_Y + LANE_WIDTH * 1.5
-//    Left     → y = CENTER_Y + LANE_WIDTH * 2.5
+//    Left     → y = CENTER_Y + LANE_WIDTH * 0.5
+//
+//  East approach (vehicles move ←, occupy north half of horizontal road):
+//    Right    → y = CENTER_Y - LANE_WIDTH * 2.5
+//    Straight → y = CENTER_Y - LANE_WIDTH * 1.5
+//    Left     → y = CENTER_Y - LANE_WIDTH * 0.5
 // ─────────────────────────────────────────────────────────────
 pub fn lane_center(origin: Cardinal, route: Route) -> (f64, f64) {
     match origin {
@@ -63,19 +63,19 @@ pub fn lane_center(origin: Cardinal, route: Route) -> (f64, f64) {
         }
         Cardinal::West => {
             let offset = match route {
-                Route::Right => LANE_WIDTH * 0.5,
+                Route::Right => LANE_WIDTH * 2.5,
                 Route::Straight => LANE_WIDTH * 1.5,
-                Route::Left => LANE_WIDTH * 2.5,
+                Route::Left => LANE_WIDTH * 0.5,
             };
-            (0.0, CENTER_Y - offset)
+            (0.0, CENTER_Y + offset)
         }
         Cardinal::East => {
             let offset = match route {
-                Route::Right => LANE_WIDTH * 0.5,
+                Route::Right => LANE_WIDTH * 2.5,
                 Route::Straight => LANE_WIDTH * 1.5,
-                Route::Left => LANE_WIDTH * 2.5,
+                Route::Left => LANE_WIDTH * 0.5,
             };
-            (0.0, CENTER_Y + offset)
+            (0.0, CENTER_Y - offset)
         }
     }
 }
@@ -220,9 +220,15 @@ mod tests {
         let (sx_l, _) = lane_center(Cardinal::South, Route::Left);
         let (nx_r, _) = lane_center(Cardinal::North, Route::Right);
         let (nx_l, _) = lane_center(Cardinal::North, Route::Left);
+        let (_, wy_r) = lane_center(Cardinal::West, Route::Right);
+        let (_, wy_l) = lane_center(Cardinal::West, Route::Left);
+        let (_, ey_r) = lane_center(Cardinal::East, Route::Right);
+        let (_, ey_l) = lane_center(Cardinal::East, Route::Left);
 
         assert!(sx_r > sx_l);
         assert!(nx_r < nx_l);
+        assert!(wy_r > wy_l);
+        assert!(ey_r < ey_l);
     }
 
     #[test]

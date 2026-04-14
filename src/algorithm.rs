@@ -321,16 +321,22 @@ fn update_turn(vehicle: &mut Vehicle, dt: f64) {
 
         vehicle.x = end.0;
         vehicle.y = end.1;
-        vehicle.angle = heading_from_vector(exit_dx, exit_dy);
+        vehicle.angle = heading_for_cardinal(exit_dir);
         return;
     }
 
     let t = vehicle.turn_progress;
     let (x, y) = cubic_bezier_point(start, control_1, control_2, end, t);
-    let (dx, dy) = cubic_bezier_derivative(start, control_1, control_2, end, t);
     vehicle.x = x;
     vehicle.y = y;
-    vehicle.angle = heading_from_vector(dx, dy);
+
+    let start_heading = heading_for_cardinal(entry_dir);
+    let turn_delta = match vehicle.route {
+        Route::Right => 90.0,
+        Route::Left => -90.0,
+        Route::Straight => 0.0,
+    };
+    vehicle.angle = (start_heading + turn_delta * t).rem_euclid(360.0);
 }
 
 fn cardinal_vector(direction: Cardinal) -> (f64, f64) {
@@ -342,12 +348,13 @@ fn cardinal_vector(direction: Cardinal) -> (f64, f64) {
     }
 }
 
-fn heading_from_vector(dx: f64, dy: f64) -> f64 {
-    if dx.abs() < f64::EPSILON && dy.abs() < f64::EPSILON {
-        return 0.0;
+fn heading_for_cardinal(direction: Cardinal) -> f64 {
+    match direction {
+        Cardinal::North => 0.0,
+        Cardinal::East => 90.0,
+        Cardinal::South => 180.0,
+        Cardinal::West => 270.0,
     }
-
-    dx.atan2(-dy).to_degrees().rem_euclid(360.0)
 }
 
 fn cubic_bezier_point(
@@ -369,25 +376,6 @@ fn cubic_bezier_point(
         + 3.0 * one_minus_t_sq * t * control_1.1
         + 3.0 * one_minus_t * t_sq * control_2.1
         + t_sq * t * end.1;
-
-    (x, y)
-}
-
-fn cubic_bezier_derivative(
-    start: (f64, f64),
-    control_1: (f64, f64),
-    control_2: (f64, f64),
-    end: (f64, f64),
-    t: f64,
-) -> (f64, f64) {
-    let one_minus_t = 1.0 - t;
-
-    let x = 3.0 * one_minus_t * one_minus_t * (control_1.0 - start.0)
-        + 6.0 * one_minus_t * t * (control_2.0 - control_1.0)
-        + 3.0 * t * t * (end.0 - control_2.0);
-    let y = 3.0 * one_minus_t * one_minus_t * (control_1.1 - start.1)
-        + 6.0 * one_minus_t * t * (control_2.1 - control_1.1)
-        + 3.0 * t * t * (end.1 - control_2.1);
 
     (x, y)
 }
