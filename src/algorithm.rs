@@ -71,20 +71,16 @@ impl SmartIntersection {
             // Apply velocity changes
             if should_stop {
                 vehicles[i].velocity = 0.0;
-                if vehicles[i].velocity < vehicles[i].min_velocity || vehicles[i].min_velocity == vehicles[i].base_velocity {
-                    vehicles[i].min_velocity = 0.0;
-                }
             } else if should_slow {
                 vehicles[i].velocity = SLOW_SPEED * 0.5;
-                if vehicles[i].velocity < vehicles[i].min_velocity {
-                    vehicles[i].min_velocity = vehicles[i].velocity;
-                }
             } else {
-                // Restore to base velocity
                 vehicles[i].velocity = vehicles[i].base_velocity;
             }
 
-            // Track max velocity
+            // Track velocity extremes after setting the current velocity.
+            if vehicles[i].velocity < vehicles[i].min_velocity {
+                vehicles[i].min_velocity = vehicles[i].velocity;
+            }
             if vehicles[i].velocity > vehicles[i].max_velocity {
                 vehicles[i].max_velocity = vehicles[i].velocity;
             }

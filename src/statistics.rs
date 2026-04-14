@@ -17,14 +17,13 @@ impl Statistics {
             .map(|v| v.max_velocity)
             .fold(0.0_f64, f64::max);
 
-        let min_velocity = if vehicles.is_empty() {
-            0.0
-        } else {
-            vehicles
-                .iter()
-                .map(|v| v.min_velocity)
-                .fold(f64::INFINITY, f64::min)
-        };
+        let min_velocity = vehicles
+            .iter()
+            .map(|v| v.min_velocity)
+            .filter(|v| *v < f64::MAX)
+            .fold(f64::INFINITY, f64::min);
+
+        let min_velocity = if min_velocity == f64::INFINITY { 0.0 } else { min_velocity };
 
         let max_time = vehicles
             .iter()

@@ -34,14 +34,14 @@ pub struct Vehicle {
     pub color_index: usize,
 }
 
-pub const VEHICLE_W: f64 = 30.0;
-pub const VEHICLE_H: f64 = 50.0;
+pub const VEHICLE_W: f64 = 26.0;
+pub const VEHICLE_H: f64 = 52.0;
 
 pub const SLOW_SPEED: f64 = 80.0;
 pub const NORMAL_SPEED: f64 = 160.0;
 pub const FAST_SPEED: f64 = 240.0;
 
-pub const SAFE_DISTANCE: f64 = 60.0;
+pub const SAFE_DISTANCE: f64 = 90.0;
 
 impl Vehicle {
     pub fn new(
@@ -81,7 +81,7 @@ impl Vehicle {
             route,
             velocity: base,
             max_velocity: base,
-            min_velocity: base,
+            min_velocity: f64::MAX,
             base_velocity: base,
             distance_traveled: 0.0,
             time_in_intersection: 0.0,
