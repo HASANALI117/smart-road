@@ -8,16 +8,16 @@ const TRAJECTORY_STEPS: usize = 20;
 // How close two vehicle centres must be (px) for the trajectory check to consider it a collision.
 // Lower = cars pass closer before braking (more close calls, more efficient).
 // Raise = cars give more clearance (safer but slower throughput).
-const COLLISION_RADIUS: f64 = 34.0;
+const COLLISION_RADIUS: f64 = 40.0;
 
 // Time-to-collision thresholds (seconds).
 // TTC below STOP_TTC  → hard stop.
 // TTC below CREEP_TTC → creep forward (car anticipates path clearing and stays ready to go).
 // TTC below SLOW_TTC  → slow down.
 // Lower values = more aggressive / more close calls. Raise for more conservative behaviour.
-const TTC_STOP: f64  = 0.20;
-const TTC_CREEP: f64 = 0.40;
-const TTC_SLOW: f64  = 0.75;
+const TTC_STOP: f64  = 0.35;
+const TTC_CREEP: f64 = 0.60;
+const TTC_SLOW: f64  = 1.00;
 
 pub struct SmartIntersection {
     pub close_calls: u32,
@@ -70,6 +70,7 @@ impl SmartIntersection {
                     && snapshot[j].entered_intersection
                     && !snapshot[j].passed_intersection
                     && !vehicles[i].is_same_lane(&snapshot[j])
+                    && paths_conflict(&vehicles[i], &snapshot[j])
                 {
                     let i_yields = vehicles[i].approach_time > snapshot[j].approach_time
                         || (vehicles[i].approach_time == snapshot[j].approach_time
@@ -131,7 +132,9 @@ impl SmartIntersection {
             }
 
             // Intersection collision avoidance
-            if !vehicles[i].turning && !vehicles[i].passed_intersection {
+            if !vehicles[i].turning && !vehicles[i].passed_intersection
+                && vehicles[i].route != Route::Right
+            {
                 if is_approaching_intersection(vehicles[i].x, vehicles[i].y, vehicles[i].origin)
                     || is_near_intersection_entry(vehicles[i].x, vehicles[i].y, vehicles[i].origin)
                 {
@@ -198,65 +201,59 @@ fn is_near_intersection_entry(x: f64, y: f64, origin: Cardinal) -> bool {
 
 fn should_yield(vehicle: &Vehicle, others: &[Vehicle]) -> bool {
     for other in others {
-        if other.id == vehicle.id || other.removed {
-            continue;
-        }
-        if other.origin == vehicle.origin {
-            continue;
-        }
+        if other.id == vehicle.id || other.removed { continue; }
+        if other.origin == vehicle.origin { continue; }
+        if !paths_conflict(vehicle, other) { continue; }
 
-        let other_in_intersection = is_in_intersection(other.x, other.y) || other.turning;
+        let other_in = is_in_intersection(other.x, other.y) || other.turning;
+        let i_in = is_in_intersection(vehicle.x, vehicle.y);
+
+        if other_in && !i_in { return true; }
+
         let other_approaching = is_approaching_intersection(other.x, other.y, other.origin)
             || is_near_intersection_entry(other.x, other.y, other.origin);
 
-        if !other_in_intersection && !other_approaching {
-            continue;
-        }
-
-        if paths_conflict(vehicle, other) {
-            // Priority: vehicle already in intersection goes first
-            if other_in_intersection && !is_in_intersection(vehicle.x, vehicle.y) {
-                return true;
-            }
-            // If both approaching, the one that arrived at the detection zone first has priority
-            if other_approaching && !other_in_intersection {
-                if vehicle.approach_time > other.approach_time {
-                    return true;
-                } else if vehicle.approach_time == other.approach_time && vehicle.id > other.id {
-                    return true;
-                }
-            }
+        if !other_in && other_approaching {
+            let i_wins = if vehicle.approach_time != other.approach_time {
+                vehicle.approach_time < other.approach_time
+            } else {
+                vehicle.id < other.id
+            };
+            if !i_wins { return true; }
         }
     }
     false
 }
 
 fn paths_conflict(a: &Vehicle, b: &Vehicle) -> bool {
+    if a.origin == b.origin { return false; }
+
     let a_exit = exit_direction(a.origin, a.route);
     let b_exit = exit_direction(b.origin, b.route);
 
-    // Same entry or exit means potential conflict
-    if a.origin == b.origin {
-        return false; // Same direction, no crossing
-    }
+    // Vehicles merging onto the same exit road always conflict
+    if a_exit == b_exit { return true; }
 
-    // Check if paths cross inside the intersection
-    // Opposite directions with crossing routes
     if are_opposite(a.origin, b.origin) {
-        // Straight vs straight: no conflict (different lanes)
-        if a.route == Route::Straight && b.route == Route::Straight {
-            return false;
-        }
-        // Right turns typically don't conflict with opposite right turns
-        if a.route == Route::Right && b.route == Route::Right {
-            return false;
-        }
+        // Both straight: travel parallel on opposite sides, no crossing
+        if a.route == Route::Straight && b.route == Route::Straight { return false; }
+        // Both right: short arcs that don't reach center
+        if a.route == Route::Right && b.route == Route::Right { return false; }
+        // Everything else (one left, mixed straight/right, any left) crosses
         return true;
     }
 
-    // Perpendicular: almost always conflict unless both turning right away from each other
-    if a.route == Route::Right && a_exit != b.origin && b.route == Route::Right && b_exit != a.origin {
-        return false;
+    // Perpendicular approaches from here down
+    // Both right: each arc stays in its own quadrant
+    if a.route == Route::Right && b.route == Route::Right { return false; }
+
+    // One right, one straight: no conflict only if the right-turner
+    // exits away from the straight vehicle's path
+    if a.route == Route::Right && b.route == Route::Straight {
+        if a_exit != b.origin { return false; }
+    }
+    if b.route == Route::Right && a.route == Route::Straight {
+        if b_exit != a.origin { return false; }
     }
 
     true
