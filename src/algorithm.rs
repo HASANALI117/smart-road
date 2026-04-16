@@ -69,6 +69,7 @@ impl SmartIntersection {
                     && !vehicles[i].passed_intersection
                     && snapshot[j].entered_intersection
                     && !snapshot[j].passed_intersection
+                    && !vehicles[i].is_same_lane(&snapshot[j])
                 {
                     let i_yields = vehicles[i].approach_time > snapshot[j].approach_time
                         || (vehicles[i].approach_time == snapshot[j].approach_time
@@ -359,23 +360,12 @@ fn update_turn(vehicle: &mut Vehicle, dt: f64) {
     let speed = vehicle.velocity * dt;
     let entry_dir = travel_direction(vehicle.origin);
     let exit_dir = exit_direction(vehicle.origin, vehicle.route);
-    let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
-    let (exit_dx, exit_dy) = cardinal_vector(exit_dir);
 
     let start = (vehicle.turn_start_x, vehicle.turn_start_y);
-    let end = (vehicle.turn_end_x, vehicle.turn_end_y);
-    let control_len = vehicle.turn_radius.max(LANE_WIDTH * 0.75);
+    let end   = (vehicle.turn_end_x,   vehicle.turn_end_y);
 
-    let control_1 = (
-        start.0 + entry_dx * control_len,
-        start.1 + entry_dy * control_len,
-    );
-    let control_2 = (
-        end.0 - exit_dx * control_len,
-        end.1 - exit_dy * control_len,
-    );
-
-    let path_length = distance(start.0, start.1, end.0, end.1).max(control_len * 2.0);
+    let (control_1, control_2, path_length) =
+        turn_bezier_params(start, end, vehicle.route, entry_dir, exit_dir, vehicle.turn_radius);
     if path_length <= 0.0 {
         vehicle.turning = false;
         vehicle.passed_intersection = true;
@@ -457,6 +447,56 @@ fn distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+// Returns (control_1, control_2, path_length) for a turning arc.
+//
+// Right turns use corner-based control points (the geometric corner where the entry
+// and exit lane lines meet).  This produces an outward quarter-circle arc that looks
+// natural.  The standard "start + entry_dir * r / end - exit_dir * r" formula works
+// for left turns but creates an inward arc for the short right turns in the rightmost
+// lane, so they get separate treatment.
+fn turn_bezier_params(
+    start: (f64, f64),
+    end: (f64, f64),
+    route: Route,
+    entry_dir: Cardinal,
+    exit_dir: Cardinal,
+    turn_radius: f64,
+) -> ((f64, f64), (f64, f64), f64) {
+    if route == Route::Right {
+        // Corner = intersection of the entry-lane line and the exit-lane line.
+        // For a vertical entry (North/South) the entry line is x = start.0;
+        // the exit line is y = end.1.  Horizontal entry is the mirror.
+        let (corner_x, corner_y) = match entry_dir {
+            Cardinal::North | Cardinal::South => (start.0, end.1),
+            Cardinal::East  | Cardinal::West  => (end.0,   start.1),
+        };
+        // alpha = 0.5523 is the exact cubic-Bezier quarter-circle approximation;
+        // raising it slightly (0.65) makes the arc look rounder and more natural.
+        let alpha = 0.65_f64;
+        let c1 = (
+            start.0 + alpha * (corner_x - start.0),
+            start.1 + alpha * (corner_y - start.1),
+        );
+        let c2 = (
+            end.0 + alpha * (corner_x - end.0),
+            end.1 + alpha * (corner_y - end.1),
+        );
+        // Arc length of a quarter-circle ≈ (π/2) * radius, where radius is the
+        // leg from the corner to either endpoint.
+        let radius = distance(start.0, start.1, corner_x, corner_y);
+        let path_length = (std::f64::consts::FRAC_PI_2 * radius).max(20.0);
+        (c1, c2, path_length)
+    } else {
+        let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
+        let (exit_dx, exit_dy) = cardinal_vector(exit_dir);
+        let control_len = turn_radius.max(LANE_WIDTH * 0.75);
+        let c1 = (start.0 + entry_dx * control_len, start.1 + entry_dy * control_len);
+        let c2 = (end.0   - exit_dx  * control_len, end.1   - exit_dy  * control_len);
+        let path_length = distance(start.0, start.1, end.0, end.1).max(control_len * 2.0);
+        (c1, c2, path_length)
+    }
+}
+
 fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
     let step_dt = LOOKAHEAD_SECS / TRAJECTORY_STEPS as f64;
     let speed = vehicle.velocity;
@@ -470,15 +510,12 @@ fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
     if vehicle.turning {
         let entry_dir = travel_direction(vehicle.origin);
         let exit_dir = exit_direction(vehicle.origin, vehicle.route);
-        let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
-        let (exit_dx, exit_dy) = cardinal_vector(exit_dir);
 
         let start = (vehicle.turn_start_x, vehicle.turn_start_y);
         let end   = (vehicle.turn_end_x,   vehicle.turn_end_y);
-        let control_len = vehicle.turn_radius.max(LANE_WIDTH * 0.75);
-        let c1 = (start.0 + entry_dx * control_len, start.1 + entry_dy * control_len);
-        let c2 = (end.0   - exit_dx  * control_len, end.1   - exit_dy  * control_len);
-        let path_length = distance(start.0, start.1, end.0, end.1).max(control_len * 2.0);
+
+        let (c1, c2, path_length) =
+            turn_bezier_params(start, end, vehicle.route, entry_dir, exit_dir, vehicle.turn_radius);
 
         let mut progress = vehicle.turn_progress;
         let progress_per_step = speed * step_dt / path_length;
