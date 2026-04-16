@@ -2,6 +2,10 @@ use crate::intersection::*;
 use crate::route::{Cardinal, Route};
 use crate::vehicle::{Vehicle, SAFE_DISTANCE, SLOW_SPEED};
 
+const LOOKAHEAD_SECS: f64 = 1.5;
+const TRAJECTORY_STEPS: usize = 20;
+const COLLISION_RADIUS: f64 = 40.0;
+
 pub struct SmartIntersection {
     pub close_calls: u32,
 }
@@ -11,7 +15,7 @@ impl SmartIntersection {
         SmartIntersection { close_calls: 0 }
     }
 
-    pub fn update(&mut self, vehicles: &mut Vec<Vehicle>, dt: f64) {
+    pub fn update(&mut self, vehicles: &mut Vec<Vehicle>, dt: f64, elapsed: f64) {
         let snapshot: Vec<Vehicle> = vehicles.clone();
         let len = vehicles.len();
 
@@ -23,7 +27,8 @@ impl SmartIntersection {
             let mut should_slow = false;
             let mut should_stop = false;
 
-            // Check same-lane vehicles ahead
+            let traj_i = project_trajectory(&vehicles[i]);
+
             for j in 0..len {
                 if i == j || vehicles[j].removed {
                     continue;
@@ -31,12 +36,60 @@ impl SmartIntersection {
 
                 let dist = vehicles[i].distance_to(&snapshot[j]);
 
-                // Same lane: maintain safe distance behind vehicle ahead
-                if vehicles[i].is_same_lane(&snapshot[j]) && snapshot[j].is_ahead_of(&vehicles[i]) {
+                // Same lane: maintain safe distance behind vehicle ahead (approach only)
+                if vehicles[i].is_same_lane(&snapshot[j])
+                    && !snapshot[j].passed_intersection
+                    && !vehicles[i].passed_intersection
+                    && snapshot[j].is_ahead_of(&vehicles[i])
+                {
                     if dist < SAFE_DISTANCE {
                         should_stop = true;
                     } else if dist < SAFE_DISTANCE * 2.0 {
                         should_slow = true;
+                    }
+                }
+
+                // Trajectory projection — one-sided: only the lower-priority vehicle yields,
+                // the higher-priority one continues unaffected (prevents deadlocks)
+                if vehicles[i].entered_intersection
+                    && !vehicles[i].passed_intersection
+                    && snapshot[j].entered_intersection
+                    && !snapshot[j].passed_intersection
+                {
+                    let i_yields = vehicles[i].approach_time > snapshot[j].approach_time
+                        || (vehicles[i].approach_time == snapshot[j].approach_time
+                            && vehicles[i].id > snapshot[j].id);
+                    if i_yields {
+                        let traj_j = project_trajectory(&snapshot[j]);
+                        if let Some(step) = first_collision_step(&traj_i, &traj_j, COLLISION_RADIUS) {
+                            let ttc = step as f64 * (LOOKAHEAD_SECS / TRAJECTORY_STEPS as f64);
+                            if ttc < 0.4 {
+                                should_stop = true;
+                            } else if ttc < 1.0 {
+                                should_slow = true;
+                            }
+                        }
+                    }
+                }
+
+                // Exit-lane following — one-sided: only the vehicle behind yields to the one ahead
+                if vehicles[i].entered_intersection && snapshot[j].passed_intersection {
+                    let exit_i = exit_direction(vehicles[i].origin, vehicles[i].route);
+                    let exit_j = exit_direction(snapshot[j].origin, snapshot[j].route);
+                    if exit_i == exit_j {
+                        let j_is_ahead = match exit_i {
+                            Cardinal::North => snapshot[j].y < vehicles[i].y,
+                            Cardinal::South => snapshot[j].y > vehicles[i].y,
+                            Cardinal::East  => snapshot[j].x > vehicles[i].x,
+                            Cardinal::West  => snapshot[j].x < vehicles[i].x,
+                        };
+                        if j_is_ahead && dist < SAFE_DISTANCE * 2.0 {
+                            if dist < SAFE_DISTANCE {
+                                should_stop = true;
+                            } else {
+                                should_slow = true;
+                            }
+                        }
                     }
                 }
 
@@ -85,13 +138,18 @@ impl SmartIntersection {
                 vehicles[i].max_velocity = vehicles[i].velocity;
             }
 
-            // Start timing when the vehicle is detected by the algorithm (approaching)
+            // Stamp arrival time the first time a vehicle enters the detection zone
             let is_detected = vehicles[i].entered_intersection
                 || is_approaching_intersection(vehicles[i].x, vehicles[i].y, vehicles[i].origin)
                 || is_near_intersection_entry(vehicles[i].x, vehicles[i].y, vehicles[i].origin);
 
-            if is_detected && !vehicles[i].passed_intersection {
-                vehicles[i].time_in_intersection += dt;
+            if is_detected {
+                if vehicles[i].approach_time == f64::MAX {
+                    vehicles[i].approach_time = elapsed;
+                }
+                if !vehicles[i].passed_intersection {
+                    vehicles[i].time_in_intersection += dt;
+                }
             }
 
             // Move the vehicle
@@ -132,31 +190,17 @@ fn should_yield(vehicle: &Vehicle, others: &[Vehicle]) -> bool {
             if other_in_intersection && !is_in_intersection(vehicle.x, vehicle.y) {
                 return true;
             }
-            // If both approaching, use a deterministic priority based on origin and id
+            // If both approaching, the one that arrived at the detection zone first has priority
             if other_approaching && !other_in_intersection {
-                let my_priority = origin_priority(vehicle.origin);
-                let their_priority = origin_priority(other.origin);
-                if my_priority == their_priority {
-                    if vehicle.id > other.id {
-                        return true;
-                    }
-                } else if my_priority > their_priority {
+                if vehicle.approach_time > other.approach_time {
+                    return true;
+                } else if vehicle.approach_time == other.approach_time && vehicle.id > other.id {
                     return true;
                 }
             }
         }
     }
     false
-}
-
-fn origin_priority(origin: Cardinal) -> u8 {
-    // Right-hand rule inspired priority
-    match origin {
-        Cardinal::South => 0,
-        Cardinal::West => 1,
-        Cardinal::North => 2,
-        Cardinal::East => 3,
-    }
 }
 
 fn paths_conflict(a: &Vehicle, b: &Vehicle) -> bool {
@@ -384,4 +428,71 @@ fn distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     let dx = x2 - x1;
     let dy = y2 - y1;
     (dx * dx + dy * dy).sqrt()
+}
+
+fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
+    let step_dt = LOOKAHEAD_SECS / TRAJECTORY_STEPS as f64;
+    let speed = vehicle.velocity;
+
+    if speed <= 0.0 {
+        return vec![(vehicle.x, vehicle.y); TRAJECTORY_STEPS];
+    }
+
+    let mut points = Vec::with_capacity(TRAJECTORY_STEPS);
+
+    if vehicle.turning {
+        let entry_dir = travel_direction(vehicle.origin);
+        let exit_dir = exit_direction(vehicle.origin, vehicle.route);
+        let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
+        let (exit_dx, exit_dy) = cardinal_vector(exit_dir);
+
+        let start = (vehicle.turn_start_x, vehicle.turn_start_y);
+        let end   = (vehicle.turn_end_x,   vehicle.turn_end_y);
+        let control_len = vehicle.turn_radius.max(LANE_WIDTH * 0.75);
+        let c1 = (start.0 + entry_dx * control_len, start.1 + entry_dy * control_len);
+        let c2 = (end.0   - exit_dx  * control_len, end.1   - exit_dy  * control_len);
+        let path_length = distance(start.0, start.1, end.0, end.1).max(control_len * 2.0);
+
+        let mut progress = vehicle.turn_progress;
+        let progress_per_step = speed * step_dt / path_length;
+
+        for _ in 0..TRAJECTORY_STEPS {
+            progress += progress_per_step;
+            if progress >= 1.0 {
+                let overshoot = (progress - 1.0) * path_length;
+                let (dx, dy) = cardinal_vector(exit_dir);
+                points.push((end.0 + dx * overshoot, end.1 + dy * overshoot));
+            } else {
+                points.push(cubic_bezier_point(start, c1, c2, end, progress));
+            }
+        }
+    } else if vehicle.passed_intersection {
+        let exit_dir = exit_direction(vehicle.origin, vehicle.route);
+        let (dx, dy) = cardinal_vector(exit_dir);
+        for step in 1..=TRAJECTORY_STEPS {
+            let t = step as f64 * step_dt;
+            points.push((vehicle.x + dx * speed * t, vehicle.y + dy * speed * t));
+        }
+    } else {
+        // Approaching or going straight through the intersection
+        let dir = travel_direction(vehicle.origin);
+        let (dx, dy) = cardinal_vector(dir);
+        for step in 1..=TRAJECTORY_STEPS {
+            let t = step as f64 * step_dt;
+            points.push((vehicle.x + dx * speed * t, vehicle.y + dy * speed * t));
+        }
+    }
+
+    points
+}
+
+fn first_collision_step(a: &[(f64, f64)], b: &[(f64, f64)], radius: f64) -> Option<usize> {
+    let threshold_sq = (radius * 2.0).powi(2);
+    for (step, ((ax, ay), (bx, by))) in a.iter().zip(b.iter()).enumerate() {
+        let dist_sq = (ax - bx).powi(2) + (ay - by).powi(2);
+        if dist_sq < threshold_sq {
+            return Some(step);
+        }
+    }
+    None
 }

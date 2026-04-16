@@ -1,7 +1,7 @@
 use sdl2::pixels::Color;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::{Point, Rect};
-use sdl2::render::{Texture, TextureCreator, WindowCanvas};
+use sdl2::render::{BlendMode, Texture, TextureCreator, WindowCanvas};
 use sdl2::video::WindowContext;
 
 use crate::intersection::*;
@@ -92,6 +92,7 @@ fn load_texture_from_png<'a>(
         .update(None, rgba.as_raw(), (4 * width) as usize)
         .map_err(|error| error.to_string())?;
 
+    texture.set_blend_mode(BlendMode::Blend);
     Ok(texture)
 }
 
@@ -129,7 +130,7 @@ fn crop_to_alpha_bounds(src: image::RgbaImage) -> (image::RgbaImage, u32, u32) {
 //  Scene entry point
 // ─────────────────────────────────────────────────────────
 
-pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &GameTextures) {
+pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &GameTextures, show_hitbox: bool) {
     canvas.set_draw_color(GRASS_COLOR);
     canvas.clear();
 
@@ -138,7 +139,7 @@ pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &
 
     for v in vehicles {
         if !v.removed {
-            draw_vehicle(canvas, v, textures);
+            draw_vehicle(canvas, v, textures, show_hitbox);
         }
     }
 }
@@ -363,9 +364,12 @@ fn draw_lane_arrows(canvas: &mut WindowCanvas) {
 //  Vehicle rendering
 // ─────────────────────────────────────────────────────────
 
-fn draw_vehicle(canvas: &mut WindowCanvas, v: &Vehicle, textures: &GameTextures) {
+fn draw_vehicle(canvas: &mut WindowCanvas, v: &Vehicle, textures: &GameTextures, show_hitbox: bool) {
     if !textures.car_textures.is_empty() {
         let index = v.sprite_index % textures.car_textures.len();
+        if show_hitbox {
+            draw_vehicle_fallback(canvas, v);
+        }
         draw_vehicle_textured(canvas, v, &textures.car_textures[index]);
     } else {
         draw_vehicle_fallback(canvas, v)
@@ -373,8 +377,8 @@ fn draw_vehicle(canvas: &mut WindowCanvas, v: &Vehicle, textures: &GameTextures)
 }
 
 fn draw_vehicle_textured(canvas: &mut WindowCanvas, v: &Vehicle, tex: &Texture) {
-    const TEXTURED_CAR_LENGTH_SCALE: f64 = 1.0;
-    const TEXTURED_CAR_WIDTH_SCALE: f64 = 4.5;
+    const TEXTURED_CAR_LENGTH_SCALE: f64 = 0.9;
+    const TEXTURED_CAR_WIDTH_SCALE: f64 = 4.0;
     let info = tex.query();
     // Source sprites face left, so after 90° rotation texture width maps to on-screen length.
     let target_length = v.height * TEXTURED_CAR_LENGTH_SCALE;
@@ -453,19 +457,19 @@ fn fill_triangle(canvas: &mut WindowCanvas,
     let (ax, ay) = (pts[0].0 as f64, pts[0].1 as f64);
     let (bx, by) = (pts[1].0 as f64, pts[1].1 as f64);
     let (cx, cy) = (pts[2].0 as f64, pts[2].1 as f64);
-    if (cy - ay).abs() < 1.0 { return; }
+    let total_h = cy - ay;
+    if total_h < 1.0 { return; }
     for y in pts[0].1..=pts[2].1 {
         let yf = y as f64;
-        let mut xs;
-        let mut xe;
-        if yf < by || (by - ay).abs() < 0.5 {
-            xs = ax + (yf - ay) / (cy - ay) * (cx - ax);
-            xe = ax + (yf - ay) / (by - ay + 0.001) * (bx - ax);
+        let x_long = ax + (yf - ay) / total_h * (cx - ax);
+        let x_short = if yf <= by {
+            let seg_h = by - ay;
+            if seg_h < 0.5 { bx } else { ax + (yf - ay) / seg_h * (bx - ax) }
         } else {
-            xs = ax + (yf - ay) / (cy - ay) * (cx - ax);
-            xe = bx + (yf - by) / (cy - by + 0.001) * (cx - bx);
-        }
-        if xs > xe { std::mem::swap(&mut xs, &mut xe); }
+            let seg_h = cy - by;
+            if seg_h < 0.5 { bx } else { bx + (yf - by) / seg_h * (cx - bx) }
+        };
+        let (xs, xe) = if x_long <= x_short { (x_long, x_short) } else { (x_short, x_long) };
         canvas.draw_line(Point::new(xs as i32, y), Point::new(xe as i32, y)).ok();
     }
 }

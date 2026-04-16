@@ -22,6 +22,10 @@ const FRAME_DELAY: u32 = 1000 / FPS;
 const SPAWN_COOLDOWN: f64 = 0.3;
 const RANDOM_SPAWN_INTERVAL: f64 = 0.5;
 
+// Maximum vehicles queued per approach direction (not yet passed the intersection).
+// Raise to allow longer queues, lower to keep lanes cleaner.
+const MAX_VEHICLES_PER_APPROACH: usize = 4;
+
 fn main() {
     let sdl_context = sdl2::init().expect("Failed to initialize SDL2");
     let video_subsystem = sdl_context.video().expect("Failed to init video");
@@ -49,6 +53,7 @@ fn main() {
     let mut all_vehicles: Vec<Vehicle> = Vec::new();
 
     let mut last_spawn: [f64; 4] = [0.0; 4];
+    let mut show_hitbox = false;
     let mut random_mode = false;
     let mut random_timer = 0.0;
     let mut running = true;
@@ -83,6 +88,13 @@ fn main() {
                     ..
                 } if !show_stats => {
                     random_mode = !random_mode;
+                }
+
+                Event::KeyDown {
+                    keycode: Some(Keycode::H),
+                    ..
+                } if !show_stats => {
+                    show_hitbox = !show_hitbox;
                 }
 
                 Event::KeyDown {
@@ -166,7 +178,7 @@ fn main() {
                 }
             }
 
-            smart.update(&mut vehicles, dt);
+            smart.update(&mut vehicles, dt, elapsed);
 
             let mut i = 0;
             while i < vehicles.len() {
@@ -178,7 +190,7 @@ fn main() {
                 }
             }
 
-            renderer::render_scene(&mut canvas, &vehicles, &textures);
+            renderer::render_scene(&mut canvas, &vehicles, &textures, show_hitbox);
         } else if show_stats {
             let mut combined = all_vehicles.clone();
             combined.extend(vehicles.iter().cloned());
@@ -213,6 +225,15 @@ fn try_spawn_vehicle(
     };
 
     if elapsed - last_spawn[idx] < SPAWN_COOLDOWN {
+        return;
+    }
+
+    // Reject spawn if too many vehicles from this direction are still approaching
+    let queued = vehicles
+        .iter()
+        .filter(|v| v.origin == origin && !v.passed_intersection)
+        .count();
+    if queued >= MAX_VEHICLES_PER_APPROACH {
         return;
     }
 
