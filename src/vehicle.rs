@@ -38,6 +38,7 @@ pub struct Vehicle {
 pub const VEHICLE_W: f64 = 26.0;
 pub const VEHICLE_H: f64 = 52.0;
 
+pub const CREEP_SPEED: f64 = 20.0;   // inches forward when a collision is predicted very soon
 pub const SLOW_SPEED: f64 = 80.0;
 pub const NORMAL_SPEED: f64 = 160.0;
 pub const FAST_SPEED: f64 = 240.0;

@@ -1,10 +1,23 @@
 use crate::intersection::*;
 use crate::route::{Cardinal, Route};
-use crate::vehicle::{Vehicle, SAFE_DISTANCE, SLOW_SPEED};
+use crate::vehicle::{Vehicle, CREEP_SPEED, SAFE_DISTANCE, SLOW_SPEED};
 
 const LOOKAHEAD_SECS: f64 = 1.5;
 const TRAJECTORY_STEPS: usize = 20;
-const COLLISION_RADIUS: f64 = 40.0;
+
+// How close two vehicle centres must be (px) for the trajectory check to consider it a collision.
+// Lower = cars pass closer before braking (more close calls, more efficient).
+// Raise = cars give more clearance (safer but slower throughput).
+const COLLISION_RADIUS: f64 = 34.0;
+
+// Time-to-collision thresholds (seconds).
+// TTC below STOP_TTC  → hard stop.
+// TTC below CREEP_TTC → creep forward (car anticipates path clearing and stays ready to go).
+// TTC below SLOW_TTC  → slow down.
+// Lower values = more aggressive / more close calls. Raise for more conservative behaviour.
+const TTC_STOP: f64  = 0.20;
+const TTC_CREEP: f64 = 0.40;
+const TTC_SLOW: f64  = 0.75;
 
 pub struct SmartIntersection {
     pub close_calls: u32,
@@ -25,6 +38,7 @@ impl SmartIntersection {
             }
 
             let mut should_slow = false;
+            let mut should_creep = false;
             let mut should_stop = false;
 
             let traj_i = project_trajectory(&vehicles[i]);
@@ -44,7 +58,7 @@ impl SmartIntersection {
                 {
                     if dist < SAFE_DISTANCE {
                         should_stop = true;
-                    } else if dist < SAFE_DISTANCE * 2.0 {
+                    } else if dist < SAFE_DISTANCE * 1.5 {
                         should_slow = true;
                     }
                 }
@@ -63,16 +77,20 @@ impl SmartIntersection {
                         let traj_j = project_trajectory(&snapshot[j]);
                         if let Some(step) = first_collision_step(&traj_i, &traj_j, COLLISION_RADIUS) {
                             let ttc = step as f64 * (LOOKAHEAD_SECS / TRAJECTORY_STEPS as f64);
-                            if ttc < 0.4 {
+                            if ttc < TTC_STOP {
                                 should_stop = true;
-                            } else if ttc < 1.0 {
+                            } else if ttc < TTC_CREEP {
+                                should_creep = true;
+                            } else if ttc < TTC_SLOW {
                                 should_slow = true;
                             }
                         }
                     }
                 }
 
-                // Exit-lane following — one-sided: only the vehicle behind yields to the one ahead
+                // Exit-lane following — one-sided: only the vehicle behind yields to the one ahead.
+                // Also checks lateral alignment so vehicles in adjacent exit lanes (different x/y)
+                // don't incorrectly slow each other down.
                 if vehicles[i].entered_intersection && snapshot[j].passed_intersection {
                     let exit_i = exit_direction(vehicles[i].origin, vehicles[i].route);
                     let exit_j = exit_direction(snapshot[j].origin, snapshot[j].route);
@@ -83,7 +101,14 @@ impl SmartIntersection {
                             Cardinal::East  => snapshot[j].x > vehicles[i].x,
                             Cardinal::West  => snapshot[j].x < vehicles[i].x,
                         };
-                        if j_is_ahead && dist < SAFE_DISTANCE * 2.0 {
+                        // Same lane = within one lane-width laterally on the exit road
+                        let same_lane = match exit_i {
+                            Cardinal::North | Cardinal::South =>
+                                (snapshot[j].x - vehicles[i].x).abs() < LANE_WIDTH,
+                            Cardinal::East | Cardinal::West =>
+                                (snapshot[j].y - vehicles[i].y).abs() < LANE_WIDTH,
+                        };
+                        if j_is_ahead && same_lane && dist < SAFE_DISTANCE * 2.0 {
                             if dist < SAFE_DISTANCE {
                                 should_stop = true;
                             } else {
@@ -124,6 +149,8 @@ impl SmartIntersection {
             // Apply velocity changes
             if should_stop {
                 vehicles[i].velocity = 0.0;
+            } else if should_creep {
+                vehicles[i].velocity = CREEP_SPEED;
             } else if should_slow {
                 vehicles[i].velocity = SLOW_SPEED * 0.5;
             } else {
