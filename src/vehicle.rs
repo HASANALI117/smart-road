@@ -35,7 +35,7 @@ pub struct Vehicle {
     pub color_index: usize,
 }
 
-pub const VEHICLE_W: f64 = 26.0;
+pub const VEHICLE_W: f64 = 47.0;
 pub const VEHICLE_H: f64 = 52.0;
 
 pub const CREEP_SPEED: f64 = 20.0;   // inches forward when a collision is predicted very soon
