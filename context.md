@@ -34,6 +34,13 @@ This file is a running record of major repository changes so future agents can r
 - Added regression tests in `src/intersection.rs` for lane-center ordering, right/left exit mapping, and turn-exit lane alignment.
 - Verification: `cargo check` passes; the only remaining warning is the pre-existing unused `stop_line_x` / `stop_line_y` fields in `src/vehicle.rs`.
 
+### 2026-04-18 - ETA-based intersection priority
+- Change: Replaced the FCFS `approach_time` queue with an ETA-based priority system in `src/algorithm.rs`. Two new helpers — `time_to_stop_line` and `lower_priority` — replace the old `approach_time` comparisons in both the trajectory conflict check and `should_yield`.
+- Why: The old system gave permanent priority to whichever car entered the 160px detection zone first, regardless of actual position or speed, and used an arbitrary ID tiebreaker. The new system grants right-of-way to whichever car will physically reach the stop line soonest (`dist / max(velocity, base_velocity × 0.15)`). The speed floor prevents stopped cars near the line from having infinite ETA. `approach_time` is retained as a secondary tiebreaker when two ETAs are within 0.1s of each other, preventing frame-to-frame oscillation between similarly-positioned vehicles. ID remains the last-resort tiebreaker.
+- Files: `src/algorithm.rs`
+- Verification: `cargo check` passes; only pre-existing `stop_line_x` / `stop_line_y` dead-code warning remains.
+- Follow-up: `stop_line_x` / `stop_line_y` fields on `Vehicle` are now fully superseded by `time_to_stop_line`; they can be removed when convenient.
+
 ## Entry Template
 
 ### YYYY-MM-DD

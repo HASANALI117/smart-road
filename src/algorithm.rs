@@ -72,9 +72,7 @@ impl SmartIntersection {
                     && !vehicles[i].is_same_lane(&snapshot[j])
                     && paths_conflict(&vehicles[i], &snapshot[j])
                 {
-                    let i_yields = vehicles[i].approach_time > snapshot[j].approach_time
-                        || (vehicles[i].approach_time == snapshot[j].approach_time
-                            && vehicles[i].id > snapshot[j].id);
+                    let i_yields = lower_priority(&vehicles[i], &snapshot[j]);
                     if i_yields {
                         let traj_j = project_trajectory(&snapshot[j]);
                         if let Some(step) = first_collision_step(&traj_i, &traj_j, COLLISION_RADIUS) {
@@ -199,6 +197,35 @@ fn is_near_intersection_entry(x: f64, y: f64, origin: Cardinal) -> bool {
     }
 }
 
+// Estimated seconds until this vehicle reaches the stop line.
+// Uses a speed floor so a stopped car near the line still beats a distant mover.
+fn time_to_stop_line(v: &Vehicle) -> f64 {
+    let dist = match v.origin {
+        Cardinal::South => (v.y - (INTERSECTION_BOTTOM + 40.0)).max(0.0),
+        Cardinal::North => ((INTERSECTION_TOP    - 40.0) - v.y).max(0.0),
+        Cardinal::West  => ((INTERSECTION_LEFT   - 40.0) - v.x).max(0.0),
+        Cardinal::East  => (v.x - (INTERSECTION_RIGHT + 40.0)).max(0.0),
+    };
+    let speed = v.velocity.max(v.base_velocity * 0.15);
+    dist / speed
+}
+
+// True when `a` should yield to `b`.
+// Primary: whoever arrives at the stop line sooner has right of way.
+// Secondary (ETAs within 0.1 s): earlier approach_time wins to avoid oscillation.
+// Tertiary: lower ID.
+fn lower_priority(a: &Vehicle, b: &Vehicle) -> bool {
+    let eta_a = time_to_stop_line(a);
+    let eta_b = time_to_stop_line(b);
+    if (eta_a - eta_b).abs() > 0.1 {
+        eta_a > eta_b
+    } else if a.approach_time != b.approach_time {
+        a.approach_time > b.approach_time
+    } else {
+        a.id > b.id
+    }
+}
+
 fn should_yield(vehicle: &Vehicle, others: &[Vehicle]) -> bool {
     for other in others {
         if other.id == vehicle.id || other.removed { continue; }
@@ -214,12 +241,7 @@ fn should_yield(vehicle: &Vehicle, others: &[Vehicle]) -> bool {
             || is_near_intersection_entry(other.x, other.y, other.origin);
 
         if !other_in && other_approaching {
-            let i_wins = if vehicle.approach_time != other.approach_time {
-                vehicle.approach_time < other.approach_time
-            } else {
-                vehicle.id < other.id
-            };
-            if !i_wins { return true; }
+            if lower_priority(vehicle, other) { return true; }
         }
     }
     false
