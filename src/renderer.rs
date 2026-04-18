@@ -130,7 +130,7 @@ fn crop_to_alpha_bounds(src: image::RgbaImage) -> (image::RgbaImage, u32, u32) {
 //  Scene entry point
 // ─────────────────────────────────────────────────────────
 
-pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &GameTextures, show_hitbox: bool) {
+pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &GameTextures, show_hitbox: bool, show_trajectory: bool) {
     canvas.set_draw_color(GRASS_COLOR);
     canvas.clear();
 
@@ -139,8 +139,27 @@ pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &
 
     for v in vehicles {
         if !v.removed {
+            if show_trajectory {
+                draw_trajectory(canvas, v);
+            }
             draw_vehicle(canvas, v, textures, show_hitbox);
         }
+    }
+}
+
+fn draw_trajectory(canvas: &mut WindowCanvas, v: &Vehicle) {
+    use crate::algorithm::project_trajectory_pub;
+    let points = project_trajectory_pub(v);
+    let steps = points.len();
+    for (i, (x, y)) in points.iter().enumerate() {
+        // Fade from bright yellow (near) to red (far)
+        let t = i as f64 / steps.max(1) as f64;
+        let r = 255;
+        let g = (255.0 * (1.0 - t)) as u8;
+        canvas.set_draw_color(sdl2::pixels::Color::RGB(r, g, 0));
+        let px = *x as i32;
+        let py = *y as i32;
+        canvas.fill_rect(sdl2::rect::Rect::new(px - 2, py - 2, 4, 4)).ok();
     }
 }
 
@@ -273,13 +292,14 @@ fn draw_lane_markings(canvas: &mut WindowCanvas) {
     draw_solid_line_h(canvas, cy, 0, il);
     draw_solid_line_h(canvas, cy, ir, WINDOW_WIDTH as i32);
 
-    // Corner squares at intersection entry
+    // Corner squares — offset diagonally outward from each intersection corner
     canvas.set_draw_color(MARKING_COLOR);
     let cs: i32 = 6;
-    canvas.fill_rect(Rect::new(il - cs, it - cs, (cs * 2) as u32, (cs * 2) as u32)).ok();
-    canvas.fill_rect(Rect::new(ir - cs, it - cs, (cs * 2) as u32, (cs * 2) as u32)).ok();
-    canvas.fill_rect(Rect::new(il - cs, ib - cs, (cs * 2) as u32, (cs * 2) as u32)).ok();
-    canvas.fill_rect(Rect::new(ir - cs, ib - cs, (cs * 2) as u32, (cs * 2) as u32)).ok();
+    let co: i32 = 40; // diagonal offset — matches RIGHT_TURN_LEAD so squares sit at turn entry corners
+    canvas.fill_rect(Rect::new(il - cs - co, it - cs - co, (cs * 2) as u32, (cs * 2) as u32)).ok();
+    canvas.fill_rect(Rect::new(ir - cs + co, it - cs - co, (cs * 2) as u32, (cs * 2) as u32)).ok();
+    canvas.fill_rect(Rect::new(il - cs - co, ib - cs + co, (cs * 2) as u32, (cs * 2) as u32)).ok();
+    canvas.fill_rect(Rect::new(ir - cs + co, ib - cs + co, (cs * 2) as u32, (cs * 2) as u32)).ok();
 
     draw_lane_arrows(canvas);
 }
@@ -506,7 +526,7 @@ pub fn render_statistics(canvas: &mut WindowCanvas, stats: &Statistics) {
     let box_x = 100i32;
     let box_y = 120i32;
     let box_w = (WINDOW_WIDTH - 200) as u32;
-    let box_h = 500u32;
+    let box_h = 610u32;
 
     canvas.set_draw_color(Color::RGB(45, 45, 65));
     canvas.fill_rect(Rect::new(box_x, box_y, box_w, box_h)).ok();
@@ -518,9 +538,11 @@ pub fn render_statistics(canvas: &mut WindowCanvas, stats: &Statistics) {
         ("Vehicles Passed", stats.total_vehicles as f64, Color::RGB( 80, 200, 120)),
         ("Max Velocity",    stats.max_velocity,          Color::RGB(255, 100, 100)),
         ("Min Velocity",    stats.min_velocity,          Color::RGB(100, 180, 255)),
-        ("Max Time",        stats.max_time,              Color::RGB(255, 200,  80)),
-        ("Min Time",        stats.min_time,              Color::RGB(180, 130, 255)),
-        ("Close Calls",     stats.close_calls as f64,   Color::RGB(255,  80,  80)),
+        ("Max Time",          stats.max_time,              Color::RGB(255, 200,  80)),
+        ("Min Time",          stats.min_time,              Color::RGB(180, 130, 255)),
+        ("Avg Wait to Enter", stats.avg_wait_to_enter,    Color::RGB(100, 220, 200)),
+        ("Avg Transit Time",  stats.avg_transit_time,     Color::RGB(220, 160, 100)),
+        ("Close Calls",       stats.close_calls as f64,   Color::RGB(255,  80,  80)),
     ];
 
     let item_h = 55i32;
@@ -541,7 +563,7 @@ pub fn render_statistics(canvas: &mut WindowCanvas, stats: &Statistics) {
         canvas.set_draw_color(Color::RGB(220, 220, 220));
         render_text_block(canvas, label, box_x + padding + 20, y + 10, 2);
         canvas.set_draw_color(*color);
-        let val_str = if label.contains("Time") {
+        let val_str = if label.contains("Time") || label.contains("Wait") {
             format!("{:.2}s", value)
         } else if label.contains("Velocity") {
             format!("{:.1} px/s", value)

@@ -3,8 +3,8 @@ use crate::route::{Cardinal, Route};
 pub const WINDOW_WIDTH: u32 = 1000;
 pub const WINDOW_HEIGHT: u32 = 800;
 
-pub const ROAD_WIDTH: f64 = 360.0;
-pub const LANE_WIDTH: f64 = 60.0;
+pub const LANE_WIDTH: f64 = 72.0;
+pub const ROAD_WIDTH: f64 = LANE_WIDTH * 6.0;
 
 pub const CENTER_X: f64 = WINDOW_WIDTH as f64 / 2.0;
 pub const CENTER_Y: f64 = WINDOW_HEIGHT as f64 / 2.0;
@@ -180,29 +180,35 @@ fn opposite_cardinal(direction: Cardinal) -> Cardinal {
     }
 }
 
+// Right turns begin/end this many px outside the intersection boundary so the
+// arc uses the empty road-corner space and is visually clear of the intersection.
+pub const RIGHT_TURN_LEAD: f64 = 40.0;
+
 /// The precise (x, y) where a vehicle should begin its turning arc.
-/// This is the point on the intersection boundary in the vehicle's lane.
 pub fn turn_entry_point(origin: Cardinal, route: Route) -> (f64, f64) {
     let (cx, cy) = lane_center(origin, route);
     match origin {
-        Cardinal::South => (cx, INTERSECTION_BOTTOM),
-        Cardinal::North => (cx, INTERSECTION_TOP),
-        Cardinal::West  => (INTERSECTION_LEFT,  cy),
-        Cardinal::East  => (INTERSECTION_RIGHT, cy),
+        Cardinal::South => (cx, INTERSECTION_BOTTOM + if route == Route::Right { RIGHT_TURN_LEAD } else { 0.0 }),
+        Cardinal::North => (cx, INTERSECTION_TOP    - if route == Route::Right { RIGHT_TURN_LEAD } else { 0.0 }),
+        Cardinal::West  => (INTERSECTION_LEFT  - if route == Route::Right { RIGHT_TURN_LEAD } else { 0.0 }, cy),
+        Cardinal::East  => (INTERSECTION_RIGHT + if route == Route::Right { RIGHT_TURN_LEAD } else { 0.0 }, cy),
     }
 }
 
 /// The precise (x, y) where a turning arc ends (exit boundary point).
+/// Right turns exit RIGHT_TURN_LEAD px past the intersection boundary so entry
+/// and exit are symmetric and the arc fully clears the intersection corner.
 pub fn turn_exit_point(origin: Cardinal, route: Route) -> (f64, f64) {
     let exit = exit_direction(origin, route);
     let exit_origin = opposite_cardinal(exit);
     let (cx, cy) = lane_center(exit_origin, route);
+    let lead = if route == Route::Right { RIGHT_TURN_LEAD } else { 0.0 };
 
     match exit {
-        Cardinal::North => (cx, INTERSECTION_TOP),
-        Cardinal::South => (cx, INTERSECTION_BOTTOM),
-        Cardinal::West  => (INTERSECTION_LEFT, cy),
-        Cardinal::East  => (INTERSECTION_RIGHT, cy),
+        Cardinal::North => (cx, INTERSECTION_TOP    - lead),
+        Cardinal::South => (cx, INTERSECTION_BOTTOM + lead),
+        Cardinal::West  => (INTERSECTION_LEFT  - lead, cy),
+        Cardinal::East  => (INTERSECTION_RIGHT + lead, cy),
     }
 }
 
@@ -251,7 +257,7 @@ mod tests {
         let (x, y) = turn_exit_point(Cardinal::North, Route::Right);
         let (_, expected_y) = lane_center(Cardinal::East, Route::Right);
 
-        assert!(approx_eq(x, INTERSECTION_LEFT));
+        assert!(approx_eq(x, INTERSECTION_LEFT - RIGHT_TURN_LEAD));
         assert!(approx_eq(y, expected_y));
     }
 }

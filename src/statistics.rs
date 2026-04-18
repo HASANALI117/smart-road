@@ -8,6 +8,8 @@ pub struct Statistics {
     pub max_time: f64,
     pub min_time: f64,
     pub close_calls: u32,
+    pub avg_wait_to_enter: f64,
+    pub avg_transit_time: f64,
 }
 
 impl Statistics {
@@ -39,6 +41,26 @@ impl Statistics {
                 .fold(f64::INFINITY, f64::min)
         };
 
+        // Only count vehicles that fully completed the intersection
+        let completed: Vec<_> = vehicles
+            .iter()
+            .filter(|v| v.passed_intersection && v.approach_time != f64::MAX && v.entry_time != f64::MAX)
+            .collect();
+
+        let avg_wait_to_enter = if completed.is_empty() {
+            0.0
+        } else {
+            completed.iter().map(|v| v.entry_time - v.approach_time).sum::<f64>()
+                / completed.len() as f64
+        };
+
+        let avg_transit_time = if completed.is_empty() {
+            0.0
+        } else {
+            completed.iter().map(|v| v.time_in_intersection - (v.entry_time - v.approach_time)).sum::<f64>()
+                / completed.len() as f64
+        };
+
         Self {
             total_vehicles: vehicles.len(),
             max_velocity,
@@ -46,6 +68,8 @@ impl Statistics {
             max_time,
             min_time,
             close_calls,
+            avg_wait_to_enter,
+            avg_transit_time,
         }
     }
 }

@@ -54,6 +54,7 @@ fn main() {
 
     let mut last_spawn: [f64; 4] = [0.0; 4];
     let mut show_hitbox = false;
+    let mut show_trajectory = false;
     let mut random_mode = false;
     let mut random_timer = 0.0;
     let mut running = true;
@@ -95,6 +96,13 @@ fn main() {
                     ..
                 } if !show_stats => {
                     show_hitbox = !show_hitbox;
+                }
+
+                Event::KeyDown {
+                    keycode: Some(Keycode::T),
+                    ..
+                } if !show_stats => {
+                    show_trajectory = !show_trajectory;
                 }
 
                 Event::KeyDown {
@@ -190,7 +198,7 @@ fn main() {
                 }
             }
 
-            renderer::render_scene(&mut canvas, &vehicles, &textures, show_hitbox);
+            renderer::render_scene(&mut canvas, &vehicles, &textures, show_hitbox, show_trajectory);
         } else if show_stats {
             let mut combined = all_vehicles.clone();
             combined.extend(vehicles.iter().cloned());

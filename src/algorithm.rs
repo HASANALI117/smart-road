@@ -40,6 +40,7 @@ impl SmartIntersection {
             let mut should_slow = false;
             let mut should_creep = false;
             let mut should_stop = false;
+            let mut follow_velocity: Option<f64> = None;
 
             let traj_i = project_trajectory(&vehicles[i]);
 
@@ -58,8 +59,19 @@ impl SmartIntersection {
                 {
                     if dist < SAFE_DISTANCE {
                         should_stop = true;
-                    } else if dist < SAFE_DISTANCE * 1.5 {
-                        should_slow = true;
+                    } else if dist < SAFE_DISTANCE * 1.8 {
+                        // Blend from leader's speed (at SAFE_DISTANCE) up to base_velocity
+                        // (at 1.8× SAFE_DISTANCE) so the follower never hard-stops and
+                        // immediately snaps back to full speed — eliminating jitter.
+                        let t = (dist - SAFE_DISTANCE) / (SAFE_DISTANCE * 0.8);
+                        let blended = snapshot[j].velocity
+                            + (vehicles[i].base_velocity - snapshot[j].velocity)
+                                * t.clamp(0.0, 1.0);
+                        let candidate = blended.max(0.0).min(vehicles[i].base_velocity);
+                        follow_velocity = Some(match follow_velocity {
+                            Some(prev) => prev.min(candidate),
+                            None => candidate,
+                        });
                     }
                 }
 
@@ -153,6 +165,8 @@ impl SmartIntersection {
                 vehicles[i].velocity = 0.0;
             } else if should_creep {
                 vehicles[i].velocity = CREEP_SPEED;
+            } else if let Some(fv) = follow_velocity {
+                vehicles[i].velocity = fv;
             } else if should_slow {
                 vehicles[i].velocity = SLOW_SPEED * 0.5;
             } else {
@@ -175,6 +189,9 @@ impl SmartIntersection {
             if is_detected {
                 if vehicles[i].approach_time == f64::MAX {
                     vehicles[i].approach_time = elapsed;
+                }
+                if vehicles[i].entered_intersection && vehicles[i].entry_time == f64::MAX {
+                    vehicles[i].entry_time = elapsed;
                 }
                 if !vehicles[i].passed_intersection {
                     vehicles[i].time_in_intersection += dt;
@@ -304,6 +321,16 @@ fn has_conflicting_vehicle_in_intersection(vehicle: &Vehicle, others: &[Vehicle]
     false
 }
 
+fn right_turn_entry_reached(v: &Vehicle) -> bool {
+    let (ex, ey) = turn_entry_point(v.origin, v.route);
+    match v.origin {
+        Cardinal::South => v.y <= ey,
+        Cardinal::North => v.y >= ey,
+        Cardinal::West  => v.x >= ex,
+        Cardinal::East  => v.x <= ex,
+    }
+}
+
 fn move_vehicle(vehicle: &mut Vehicle, dt: f64) {
     if vehicle.removed || vehicle.velocity == 0.0 {
         return;
@@ -317,11 +344,25 @@ fn move_vehicle(vehicle: &mut Vehicle, dt: f64) {
         vehicle.entered_intersection = true;
     }
 
-    // Determine if vehicle should begin turning
-    if in_intersection && !vehicle.turning && !vehicle.passed_intersection {
+    // Determine if vehicle should begin turning.
+    // Right turns start before the intersection boundary (at their offset entry point)
+    // so the arc uses the outer road-corner space.  Left turns wait until inside.
+    if !vehicle.turning && !vehicle.passed_intersection {
         match vehicle.route {
             Route::Straight => {}
-            Route::Right | Route::Left => setup_turn(vehicle),
+            Route::Right => {
+                if right_turn_entry_reached(vehicle) {
+                    if !vehicle.entered_intersection {
+                        vehicle.entered_intersection = true;
+                    }
+                    setup_turn(vehicle);
+                }
+            }
+            Route::Left => {
+                if in_intersection {
+                    setup_turn(vehicle);
+                }
+            }
         }
     }
 
@@ -467,12 +508,6 @@ fn distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
 }
 
 // Returns (control_1, control_2, path_length) for a turning arc.
-//
-// Right turns use corner-based control points (the geometric corner where the entry
-// and exit lane lines meet).  This produces an outward quarter-circle arc that looks
-// natural.  The standard "start + entry_dir * r / end - exit_dir * r" formula works
-// for left turns but creates an inward arc for the short right turns in the rightmost
-// lane, so they get separate treatment.
 fn turn_bezier_params(
     start: (f64, f64),
     end: (f64, f64),
@@ -482,28 +517,21 @@ fn turn_bezier_params(
     turn_radius: f64,
 ) -> ((f64, f64), (f64, f64), f64) {
     if route == Route::Right {
-        // Corner = intersection of the entry-lane line and the exit-lane line.
-        // For a vertical entry (North/South) the entry line is x = start.0;
-        // the exit line is y = end.1.  Horizontal entry is the mirror.
-        let (corner_x, corner_y) = match entry_dir {
-            Cardinal::North | Cardinal::South => (start.0, end.1),
-            Cardinal::East  | Cardinal::West  => (end.0,   start.1),
-        };
-        // alpha = 0.5523 is the exact cubic-Bezier quarter-circle approximation;
-        // raising it slightly (0.65) makes the arc look rounder and more natural.
-        let alpha = 0.65_f64;
-        let c1 = (
-            start.0 + alpha * (corner_x - start.0),
-            start.1 + alpha * (corner_y - start.1),
-        );
-        let c2 = (
-            end.0 + alpha * (corner_x - end.0),
-            end.1 + alpha * (corner_y - end.1),
-        );
-        // Arc length of a quarter-circle ≈ (π/2) * radius, where radius is the
-        // leg from the corner to either endpoint.
-        let radius = distance(start.0, start.1, corner_x, corner_y);
-        let path_length = (std::f64::consts::FRAC_PI_2 * radius).max(20.0);
+        // Align control points with the actual travel directions so the arc
+        // starts/ends tangent to the road instead of sliding sideways.
+        // c1 extends along the entry heading; c2 backs off along the exit heading.
+        // Control length = shorter leg of the turn so the arc stays in the corner space.
+        let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
+        let (exit_dx, exit_dy)   = cardinal_vector(exit_dir);
+        let leg_x = (end.0 - start.0).abs();
+        let leg_y = (end.1 - start.1).abs();
+        // Each arm uses the leg that runs along its own axis so the curve
+        // fills the full corner space rather than being limited to the shorter leg.
+        let c1_len = if entry_dy != 0.0 { leg_y } else { leg_x } * 0.75;
+        let c2_len = if exit_dy  != 0.0 { leg_y } else { leg_x } * 0.75;
+        let c1 = (start.0 + entry_dx * c1_len, start.1 + entry_dy * c1_len);
+        let c2 = (end.0   - exit_dx  * c2_len, end.1   - exit_dy  * c2_len);
+        let path_length = (distance(start.0, start.1, end.0, end.1) * 1.15).max(20.0);
         (c1, c2, path_length)
     } else {
         let (entry_dx, entry_dy) = cardinal_vector(entry_dir);
@@ -514,6 +542,14 @@ fn turn_bezier_params(
         let path_length = distance(start.0, start.1, end.0, end.1).max(control_len * 2.0);
         (c1, c2, path_length)
     }
+}
+
+/// Trajectory for visualization — always uses base_velocity so the dots show
+/// where the car intends to go at normal speed, not a braked/yielding state.
+pub fn project_trajectory_pub(vehicle: &Vehicle) -> Vec<(f64, f64)> {
+    let mut v = vehicle.clone();
+    v.velocity = v.base_velocity;
+    project_trajectory(&v)
 }
 
 fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {

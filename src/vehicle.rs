@@ -29,6 +29,7 @@ pub struct Vehicle {
     pub turn_end_y: f64,
     pub close_call: bool,
     pub approach_time: f64,
+    pub entry_time: f64,
     pub stop_line_x: f64,
     pub stop_line_y: f64,
     pub sprite_index: usize,
@@ -39,8 +40,8 @@ pub const VEHICLE_W: f64 = 47.0;
 pub const VEHICLE_H: f64 = 52.0;
 
 pub const CREEP_SPEED: f64 = 20.0;   // inches forward when a collision is predicted very soon
-pub const SLOW_SPEED: f64 = 80.0;
-pub const NORMAL_SPEED: f64 = 160.0;
+pub const SLOW_SPEED: f64 = 120.0;
+pub const NORMAL_SPEED: f64 = 200.0;
 pub const FAST_SPEED: f64 = 240.0;
 
 pub const SAFE_DISTANCE: f64 = 90.0;
@@ -99,6 +100,7 @@ impl Vehicle {
             turn_end_y: 0.0,
             close_call: false,
             approach_time: f64::MAX,
+            entry_time: f64::MAX,
             stop_line_x: slx,
             stop_line_y: sly,
             sprite_index,
