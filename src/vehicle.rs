@@ -44,7 +44,7 @@ pub const SLOW_SPEED: f64 = 120.0;
 pub const NORMAL_SPEED: f64 = 200.0;
 pub const FAST_SPEED: f64 = 240.0;
 
-pub const SAFE_DISTANCE: f64 = 90.0;
+pub const SAFE_DISTANCE: f64 = 100.0;
 
 impl Vehicle {
     pub fn new(

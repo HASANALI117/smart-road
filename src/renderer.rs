@@ -130,7 +130,7 @@ fn crop_to_alpha_bounds(src: image::RgbaImage) -> (image::RgbaImage, u32, u32) {
 //  Scene entry point
 // ─────────────────────────────────────────────────────────
 
-pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &GameTextures, show_hitbox: bool, show_trajectory: bool) {
+pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &GameTextures, show_hitbox: bool, show_trajectory: bool, random_mode: bool) {
     canvas.set_draw_color(GRASS_COLOR);
     canvas.clear();
 
@@ -144,6 +144,55 @@ pub fn render_scene(canvas: &mut WindowCanvas, vehicles: &[Vehicle], textures: &
             }
             draw_vehicle(canvas, v, textures, show_hitbox);
         }
+    }
+
+    render_hud(canvas, random_mode, show_trajectory, show_hitbox);
+}
+
+fn render_hud(canvas: &mut WindowCanvas, random_mode: bool, show_trajectory: bool, show_hitbox: bool) {
+    let indicators: &[(&str, &str, bool, Color)] = &[
+        ("R", "RANDOM", random_mode, Color::RGB(80, 220, 80)),
+        ("T", "TRAJ",   show_trajectory, Color::RGB(255, 220, 60)),
+        ("H", "HITBOX", show_hitbox, Color::RGB(80, 200, 255)),
+    ];
+
+    let pad_x = 10i32;
+    let pad_y = 10i32;
+    let pill_h = 20i32;
+    let pill_gap = 6i32;
+
+    // ESC hint — top-right corner
+    let esc_text = "ESC: STATS / EXIT";
+    let esc_x = WINDOW_WIDTH as i32 - (esc_text.len() as i32 * 7) - 10;
+    canvas.set_draw_color(Color::RGBA(180, 180, 180, 200));
+    render_text_block(canvas, esc_text, esc_x, pad_y + 6, 1);
+
+    for (i, (key, label, active, color)) in indicators.iter().enumerate() {
+        let x = pad_x + i as i32 * (90 + pill_gap);
+        let y = pad_y;
+
+        let bg = if *active { Color::RGBA(color.r / 4, color.g / 4, color.b / 4, 200) }
+                 else       { Color::RGBA(20, 20, 20, 160) };
+
+        canvas.set_blend_mode(BlendMode::Blend);
+        canvas.set_draw_color(bg);
+        canvas.fill_rect(Rect::new(x, y, 86, pill_h as u32)).ok();
+
+        let border = if *active { *color } else { Color::RGB(60, 60, 60) };
+        canvas.set_draw_color(border);
+        canvas.draw_rect(Rect::new(x, y, 86, pill_h as u32)).ok();
+
+        // Key badge
+        let key_color = if *active { *color } else { Color::RGB(80, 80, 80) };
+        canvas.set_draw_color(key_color);
+        canvas.fill_rect(Rect::new(x + 2, y + 2, 14, (pill_h - 4) as u32)).ok();
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        render_text_block(canvas, key, x + 4, y + 6, 1);
+
+        // Label
+        let text_color = if *active { *color } else { Color::RGB(80, 80, 80) };
+        canvas.set_draw_color(text_color);
+        render_text_block(canvas, label, x + 22, y + 6, 1);
     }
 }
 
@@ -387,12 +436,48 @@ fn draw_lane_arrows(canvas: &mut WindowCanvas) {
 fn draw_vehicle(canvas: &mut WindowCanvas, v: &Vehicle, textures: &GameTextures, show_hitbox: bool) {
     if !textures.car_textures.is_empty() {
         let index = v.sprite_index % textures.car_textures.len();
+        let tex = &textures.car_textures[index];
+        draw_vehicle_textured(canvas, v, tex);
         if show_hitbox {
-            draw_vehicle_fallback(canvas, v);
+            let (hw, hh) = textured_hitbox_halves(tex, v);
+            draw_hitbox(canvas, v, hw, hh);
         }
-        draw_vehicle_textured(canvas, v, &textures.car_textures[index]);
     } else {
         draw_vehicle_fallback(canvas, v)
+    }
+}
+
+/// Returns the (half-perpendicular-width, half-longitudinal-length) of the sprite
+/// as it appears on screen, using the same scale factors as draw_vehicle_textured.
+/// hw = half car width (side-to-side), hh = half car length (front-to-back).
+fn textured_hitbox_halves(tex: &Texture, v: &Vehicle) -> (f64, f64) {
+    const LENGTH_SCALE: f64 = 0.9;
+    const WIDTH_SCALE: f64 = 4.0;
+    let info = tex.query();
+    let target_side = v.height * LENGTH_SCALE;
+    let scale = target_side / info.width as f64;
+    let longitudinal = info.height as f64 * scale * WIDTH_SCALE;
+    (target_side / 2.0, longitudinal / 2.0)
+}
+
+fn draw_hitbox(canvas: &mut WindowCanvas, v: &Vehicle, hw: f64, hh: f64) {
+    let cx = v.x;
+    let cy = v.y;
+    let a = v.angle.to_radians();
+    let (cos_a, sin_a) = (a.cos(), a.sin());
+    let corners: [(i32, i32); 4] = [
+        rot(-hw, -hh, cos_a, sin_a, cx, cy),
+        rot( hw, -hh, cos_a, sin_a, cx, cy),
+        rot( hw,  hh, cos_a, sin_a, cx, cy),
+        rot(-hw,  hh, cos_a, sin_a, cx, cy),
+    ];
+    canvas.set_draw_color(Color::RGBA(0, 220, 255, 220));
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        canvas.draw_line(
+            Point::new(corners[i].0, corners[i].1),
+            Point::new(corners[j].0, corners[j].1),
+        ).ok();
     }
 }
 

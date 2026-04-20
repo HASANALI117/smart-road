@@ -5,6 +5,16 @@ use crate::vehicle::{Vehicle, CREEP_SPEED, SAFE_DISTANCE, SLOW_SPEED};
 const LOOKAHEAD_SECS: f64 = 1.5;
 const TRAJECTORY_STEPS: usize = 20;
 
+// Longer lookahead used when checking whether the stop line is clear to enter.
+// Needs to cover the full transit time of a slow left-turner (~2.5 s at min speed).
+const CLEAR_LOOKAHEAD_SECS: f64 = 3.0;
+const CLEAR_TRAJECTORY_STEPS: usize = 30;
+
+// Lookahead used for the visual trajectory overlay — long enough to show the
+// complete route through the intersection and onto the exit road.
+const VIS_LOOKAHEAD_SECS: f64 = 4.5;
+const VIS_TRAJECTORY_STEPS: usize = 45;
+
 // How close two vehicle centres must be (px) for the trajectory check to consider it a collision.
 // Lower = cars pass closer before braking (more close calls, more efficient).
 // Raise = cars give more clearance (safer but slower throughput).
@@ -84,7 +94,7 @@ impl SmartIntersection {
                     && !vehicles[i].is_same_lane(&snapshot[j])
                     && paths_conflict(&vehicles[i], &snapshot[j])
                 {
-                    let i_yields = lower_priority(&vehicles[i], &snapshot[j]);
+                    let i_yields = in_intersection_lower_priority(&vehicles[i], &snapshot[j]);
                     if i_yields {
                         let traj_j = project_trajectory(&snapshot[j]);
                         if let Some(step) = first_collision_step(&traj_i, &traj_j, COLLISION_RADIUS) {
@@ -120,11 +130,19 @@ impl SmartIntersection {
                             Cardinal::East | Cardinal::West =>
                                 (snapshot[j].y - vehicles[i].y).abs() < LANE_WIDTH,
                         };
-                        if j_is_ahead && same_lane && dist < SAFE_DISTANCE * 2.0 {
+                        if j_is_ahead && same_lane {
                             if dist < SAFE_DISTANCE {
                                 should_stop = true;
-                            } else {
-                                should_slow = true;
+                            } else if dist < SAFE_DISTANCE * 1.8 {
+                                let t = (dist - SAFE_DISTANCE) / (SAFE_DISTANCE * 0.8);
+                                let blended = snapshot[j].velocity
+                                    + (vehicles[i].base_velocity - snapshot[j].velocity)
+                                        * t.clamp(0.0, 1.0);
+                                let candidate = blended.max(0.0).min(vehicles[i].base_velocity);
+                                follow_velocity = Some(match follow_velocity {
+                                    Some(prev) => prev.min(candidate),
+                                    None => candidate,
+                                });
                             }
                         }
                     }
@@ -227,7 +245,7 @@ fn time_to_stop_line(v: &Vehicle) -> f64 {
     dist / speed
 }
 
-// True when `a` should yield to `b`.
+// True when `a` should yield to `b` — used at the stop line / approach zone.
 // Primary: whoever arrives at the stop line sooner has right of way.
 // Secondary (ETAs within 0.1 s): earlier approach_time wins to avoid oscillation.
 // Tertiary: lower ID.
@@ -238,6 +256,21 @@ fn lower_priority(a: &Vehicle, b: &Vehicle) -> bool {
         eta_a > eta_b
     } else if a.approach_time != b.approach_time {
         a.approach_time > b.approach_time
+    } else {
+        a.id > b.id
+    }
+}
+
+// True when `a` should yield to `b` — used for cars already inside the intersection.
+// Once inside, whoever entered first keeps right of way regardless of how long
+// the other car has been waiting outside. This prevents a nearly-done turning car
+// from being forced to stop mid-turn because the car that just entered has an
+// earlier approach_time (was waiting longer outside).
+fn in_intersection_lower_priority(a: &Vehicle, b: &Vehicle) -> bool {
+    let at = if a.entry_time != f64::MAX { a.entry_time } else { a.approach_time };
+    let bt = if b.entry_time != f64::MAX { b.entry_time } else { b.approach_time };
+    if (at - bt).abs() > 0.05 {
+        at > bt  // later entry = lower priority
     } else {
         a.id > b.id
     }
@@ -308,14 +341,48 @@ fn are_opposite(a: Cardinal, b: Cardinal) -> bool {
     )
 }
 
+// True when a vehicle has crossed the centre of the intersection and is committed
+// to its exit. A car in this state is unlikely to stop in a position that blocks
+// a newly entering vehicle, so it is safe to let entry happen early.
+fn past_intersection_centre(v: &Vehicle) -> bool {
+    if v.passed_intersection {
+        return true;
+    }
+    if v.turning {
+        return v.turn_progress >= 0.55;
+    }
+    // Straight-through: check which side of the centre the car is on.
+    match travel_direction(v.origin) {
+        Cardinal::North => v.y < CENTER_Y,
+        Cardinal::South => v.y > CENTER_Y,
+        Cardinal::East  => v.x > CENTER_X,
+        Cardinal::West  => v.x < CENTER_X,
+    }
+}
+
 fn has_conflicting_vehicle_in_intersection(vehicle: &Vehicle, others: &[Vehicle]) -> bool {
+    // Project the waiting vehicle at base speed to see where it would go if it moved now.
+    let mut entry_ghost = vehicle.clone();
+    entry_ghost.velocity = entry_ghost.base_velocity;
+    let traj_entry = project_trajectory_n(&entry_ghost, CLEAR_LOOKAHEAD_SECS, CLEAR_TRAJECTORY_STEPS);
+
     for other in others {
         if other.id == vehicle.id || other.removed {
             continue;
         }
-        if (is_in_intersection(other.x, other.y) || other.turning) && paths_conflict(vehicle, other)
-        {
-            return true;
+        if (is_in_intersection(other.x, other.y) || other.turning) && paths_conflict(vehicle, other) {
+            // Guard: if the conflicting car hasn't crossed the intersection centre yet it
+            // could still slow down or stop in a blocking position. Always hold until it
+            // is committed to the second half of its transit.
+            if !past_intersection_centre(other) {
+                return true;
+            }
+            // Car is past centre — use trajectory to check if it clears before we arrive.
+            // Use a larger radius than normal TTC checks to stay conservative.
+            let traj_other = project_trajectory_n(other, CLEAR_LOOKAHEAD_SECS, CLEAR_TRAJECTORY_STEPS);
+            if first_collision_step(&traj_entry, &traj_other, COLLISION_RADIUS * 1.3).is_some() {
+                return true;
+            }
         }
     }
     false
@@ -544,23 +611,36 @@ fn turn_bezier_params(
     }
 }
 
-/// Trajectory for visualization — always uses base_velocity so the dots show
-/// where the car intends to go at normal speed, not a braked/yielding state.
+/// Trajectory for visualization — simulates a ghost vehicle at base_velocity so
+/// the dots trace the full intended route including upcoming turns.
 pub fn project_trajectory_pub(vehicle: &Vehicle) -> Vec<(f64, f64)> {
-    let mut v = vehicle.clone();
-    v.velocity = v.base_velocity;
-    project_trajectory(&v)
+    let step_dt = VIS_LOOKAHEAD_SECS / VIS_TRAJECTORY_STEPS as f64;
+    let mut ghost = vehicle.clone();
+    ghost.velocity = ghost.base_velocity;
+    let mut points = Vec::with_capacity(VIS_TRAJECTORY_STEPS);
+    for _ in 0..VIS_TRAJECTORY_STEPS {
+        if ghost.removed {
+            break;
+        }
+        move_vehicle(&mut ghost, step_dt);
+        points.push((ghost.x, ghost.y));
+    }
+    points
 }
 
 fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
-    let step_dt = LOOKAHEAD_SECS / TRAJECTORY_STEPS as f64;
+    project_trajectory_n(vehicle, LOOKAHEAD_SECS, TRAJECTORY_STEPS)
+}
+
+fn project_trajectory_n(vehicle: &Vehicle, lookahead_secs: f64, steps: usize) -> Vec<(f64, f64)> {
+    let step_dt = lookahead_secs / steps as f64;
     let speed = vehicle.velocity;
 
     if speed <= 0.0 {
-        return vec![(vehicle.x, vehicle.y); TRAJECTORY_STEPS];
+        return vec![(vehicle.x, vehicle.y); steps];
     }
 
-    let mut points = Vec::with_capacity(TRAJECTORY_STEPS);
+    let mut points = Vec::with_capacity(steps);
 
     if vehicle.turning {
         let entry_dir = travel_direction(vehicle.origin);
@@ -575,7 +655,7 @@ fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
         let mut progress = vehicle.turn_progress;
         let progress_per_step = speed * step_dt / path_length;
 
-        for _ in 0..TRAJECTORY_STEPS {
+        for _ in 0..steps {
             progress += progress_per_step;
             if progress >= 1.0 {
                 let overshoot = (progress - 1.0) * path_length;
@@ -588,7 +668,7 @@ fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
     } else if vehicle.passed_intersection {
         let exit_dir = exit_direction(vehicle.origin, vehicle.route);
         let (dx, dy) = cardinal_vector(exit_dir);
-        for step in 1..=TRAJECTORY_STEPS {
+        for step in 1..=steps {
             let t = step as f64 * step_dt;
             points.push((vehicle.x + dx * speed * t, vehicle.y + dy * speed * t));
         }
@@ -596,7 +676,7 @@ fn project_trajectory(vehicle: &Vehicle) -> Vec<(f64, f64)> {
         // Approaching or going straight through the intersection
         let dir = travel_direction(vehicle.origin);
         let (dx, dy) = cardinal_vector(dir);
-        for step in 1..=TRAJECTORY_STEPS {
+        for step in 1..=steps {
             let t = step as f64 * step_dt;
             points.push((vehicle.x + dx * speed * t, vehicle.y + dy * speed * t));
         }

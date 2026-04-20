@@ -198,7 +198,7 @@ fn main() {
                 }
             }
 
-            renderer::render_scene(&mut canvas, &vehicles, &textures, show_hitbox, show_trajectory);
+            renderer::render_scene(&mut canvas, &vehicles, &textures, show_hitbox, show_trajectory, random_mode);
         } else if show_stats {
             let mut combined = all_vehicles.clone();
             combined.extend(vehicles.iter().cloned());
