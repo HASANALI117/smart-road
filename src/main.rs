@@ -31,7 +31,11 @@ fn main() {
     let video_subsystem = sdl_context.video().expect("Failed to init video");
 
     let window = video_subsystem
-        .window("Smart Road - Intersection Simulator", WINDOW_WIDTH, WINDOW_HEIGHT)
+        .window(
+            "Smart Road - Intersection Simulator",
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        )
         .position_centered()
         .build()
         .expect("Failed to create window");
@@ -198,7 +202,14 @@ fn main() {
                 }
             }
 
-            renderer::render_scene(&mut canvas, &vehicles, &textures, show_hitbox, show_trajectory, random_mode);
+            renderer::render_scene(
+                &mut canvas,
+                &vehicles,
+                &textures,
+                show_hitbox,
+                show_trajectory,
+                random_mode,
+            );
         } else if show_stats {
             let mut combined = all_vehicles.clone();
             combined.extend(vehicles.iter().cloned());
